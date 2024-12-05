@@ -1,0 +1,6 @@
+longport
+tushare
+matplotlib
+backtrader
+pandas
+yfinance
