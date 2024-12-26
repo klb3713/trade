@@ -41,7 +41,7 @@ class LongPortData(BaseDataLoader):
                 data_dict['volume'].append(float(row.volume))
                 data_dict['openinterest'].append(0)
                 data_dict['datetime'].append(row.timestamp)
-                data_dict['name'].append("700.HK")
+                data_dict['name'].append(stock_ids)
             
             df = pd.DataFrame(data_dict)
 
