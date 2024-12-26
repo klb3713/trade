@@ -1,6 +1,7 @@
 import backtrader as bt
 import matplotlib.pyplot as plt
 from dataloader import TushareData
+from dataloader import LongPortData
 from strategy import SimpleMovingAverage
 from strategy import DoubleSMA
 from strategy import RSI_SMA
@@ -14,13 +15,17 @@ from strategy import MeanReversionByStop
 
 if __name__ == '__main__':
     # Add DataSet
-    dataset = TushareData(isplot=True)
+    # dataset = TushareData(isplot=True)
+    dataset = LongPortData(isplot=True)
     # 汽车
     stock_ids = "600104.SH,000625.SZ,603912.SH"
     # 黄金
     # stock_ids = "601069.SH,600988.SH,600489.SH"
     # stock_ids = "603912.SH"
-    data = dataset.fetch_data(stock_ids = stock_ids,start_time = "20231101",end_time = "20240901")
+    # 香港
+    stock_ids = "700.HK"
+
+    data = dataset.fetch_data(stock_ids = stock_ids,start_time = "20231205",end_time = "20241223")
     
     # 历史收益率、波动方差、标准差计算
 
@@ -28,7 +33,7 @@ if __name__ == '__main__':
     cerebro = bt.Cerebro()
 
     # Add a strategy
-    cerebro.addstrategy(MACD)
+    cerebro.addstrategy(DoubleSMA)
 
     # Add the Data Feed to Cerebro
     for i in range(len(data)):

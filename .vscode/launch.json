@@ -5,6 +5,13 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "history_candlesticks",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./longport_test/history_candlesticks.py",
+            "console": "integratedTerminal"
+        },
+        {
             "name": "test",
             "type": "debugpy",
             "request": "launch",
