@@ -22,8 +22,9 @@ if __name__ == '__main__':
     # 黄金
     # stock_ids = "601069.SH,600988.SH,600489.SH"
     # stock_ids = "603912.SH"
-    # 香港
-    stock_ids = "700.HK"
+    # 香港 
+    ## xiaomi
+    stock_ids = "01810.HK"
 
     data = dataset.fetch_data(stock_ids = stock_ids,start_time = "20231205",end_time = "20241223")
     
