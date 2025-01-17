@@ -9,3 +9,12 @@ ctx = TradeContext(config)
 
 resp = ctx.account_balance()
 print(resp)
+
+# 获取股票持仓
+# https://open.longportapp.com/docs/trade/asset/stock
+from longport.openapi import TradeContext, Config
+
+config = Config.from_env()
+ctx = TradeContext(config)
+resp = ctx.stock_positions()
+print(resp)
