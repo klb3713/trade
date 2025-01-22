@@ -6,3 +6,4 @@ from .MACD import MACD
 from .RSI_SMA_MACD import RSI_SMA_MACD
 from .MeanReversion import MeanReversion
 from .MeanReversionByStop import MeanReversionByStop
+from .net_trade import NetTrade

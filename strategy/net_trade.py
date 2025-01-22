@@ -2,11 +2,11 @@ import backtrader as bt
 
 # Create a Stratey
 # 不兼容多股票输入
+# 1、标的选择（手动）
+# 2、建仓时机-》震荡行情开始，分类问题（暂时手动）
+# 3、与上一次买入/卖出相差一个百分数阈值-》卖出/买入
+# 4、行情结束-》卖出
 class NetTrade(bt.Strategy):
-    params = (
-        ('period_sma10', 10),
-        ('period_sma30', 30)
-    )
 
     def __init__(self, doprint=True):
         self.doprint = doprint
@@ -15,17 +15,14 @@ class NetTrade(bt.Strategy):
         self.dataclose = self.datas[0].close
         # 跟踪订单状态以及买卖价格和佣金
         self.order = None
-        self.buyprice = None
         self.buycomm = None
 
-        self.
-
-        # # 增加移动均线
-        # self.sma10 = bt.indicators.SimpleMovingAverage(
-        #     self.datas[0], period=self.params.period_sma10)
-        # # 增加移动均线
-        # self.sma30 = bt.indicators.SimpleMovingAverage(
-        #     self.datas[0], period=self.params.period_sma30)
+        # 获取目标标的，及当前标定仓位
+        self.buyprice = None
+        self.sellprice = None
+        self.last_sellbuy = None
+        # 获取上一次标的买入/卖出的价格
+        self.holdcash = None
 
     def log(self, txt, dt=None):
         ''' Logging function for this strategy'''
@@ -36,22 +33,31 @@ class NetTrade(bt.Strategy):
     def next(self):
         # 记录当前处理的close值
         self.log('Close, %.2f' % self.dataclose[0])
+        print('当前可用资金', self.broker.getcash())
+        print('当前总资产', self.broker.getvalue())
+        print('当前持仓量', self.broker.getposition(self.data).size)
+        print('当前持仓成本', self.broker.getposition(self.data).price)
+        # 也可以直接获取持仓
+        print('当前持仓量', self.getposition(self.data).size)
+        print('当前持仓成本', self.getposition(self.data).price)
 
         # 订单是否
         if self.order:
             return
         
-        # Check if we are in the market
+        # 判断收盘价与上一次买入/卖出价格差值是否超过阈值
         if not self.position:
-            # 当今天的10日均线大于30日均线并且昨天的10日均线小于30日均线，则进入市场（买）
-            if self.sma10[0] > self.sma30[0] and self.sma10[-1] < self.sma30[-1]:
-                #若上一个订单处理完成，可继续执行买入操作
-                self.order = self.buy()
-
+            # 若未买入，则判断是否买入
+            print('position')
+            self.order = self.buy()
         else:
-            if self.sma10[0] < self.sma30[0] and self.sma10[-1] > self.sma30[-1]:
-        	    # 卖出
-                self.order = self.close()
+            print('buyprice')
+
+            if self.dataclose[0] - self.buyprice > 0.3:
+                self.order = self.sell()
+            elif self.dataclose[0] - self.buyprice < -0.3:
+                self.order = self.buy()
+            
 
     def notify_order(self, order):
         # 订单状态为提交和接受，不做处理
@@ -75,6 +81,7 @@ class NetTrade(bt.Strategy):
                     order.executed.value,
                     order.executed.comm)
                 )  
+                self.buyprice = order.executed.price
             self.bar_executed = len(self)
 
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
