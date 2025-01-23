@@ -8,7 +8,7 @@
             "name": "history_candlesticks",
             "type": "debugpy",
             "request": "launch",
-            "program": "./longport_test/history_candlesticks.py",
+            "program": "./online_trader/LongBridge.py",
             "console": "integratedTerminal"
         },
         {
