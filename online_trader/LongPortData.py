@@ -1,19 +1,13 @@
-
-from datetime import datetime
-from longport.openapi import QuoteContext, Config, SubType, PushQuote, Period, AdjustType,TradeContext,OrderType, OrderSide, TimeInForceType,OpenApiException
+from datetime import datetime, timedelta
+from longport.openapi import QuoteContext, Config, SubType, PushQuote, Period, AdjustType,TradeContext,OrderType, OrderSide, TimeInForceType,OpenApiException,OrderStatus,Market
 import pandas as pd
 from decimal import Decimal
-
 import time
- 
+import logging
 
+# 初始化log
+logger = logging.getLogger(__name__)
 
-'''
-1、获取账户持仓以及资金储备
-2、获取目标标的上一次买入/卖出价格
-3、获取目标标的当前价格
-4、判断是否买入/卖出
-'''
 class LongPortData():
     '''
     从longport读取香港股票数据日线
@@ -36,27 +30,47 @@ class LongPortData():
         # 历史交易记录
         self.last_trader_price = 0.0
 
+        # 市场
+        self.market = None
+        self.market_during_time= None
+
         # 市场时间
         self.market_time= {
             "US": {
-                "Pre": {
+                "pre_market_quote": {
                     "begin": "17:00:00",
                     "end": "22:30:00",
                 },
-                "Normal": {
-                    "begin": "17:00:00",
-                    "end": "22:30:00",
+                0: {
+                    "begin": "22:30:00",
+                    "end": "05:00:00",
                 },
-                "Post": {
-                    "begin": "17:00:00",
-                    "end": "22:30:00",
+                "post_market_quote": {
+                    "begin": "05:00:00",
+                    "end": "09:30:00",
                 },
+            },
+            "HK": {
+                0: {
+                    "begin": "09:30:00",
+                    "end": "16:00:00",
+                }
             }
         }
-        print(self.account_balance)
-        print(self.stock_positions)
+
+        self.symbol_name = None
+
+        logger.info(self.account_balance)
+        logger.info(self.stock_positions)
 
     def get_last_trade_price(self, start_date, stock_id):
+        # 先找当日成交记录
+        resp = self.trade_ctx.today_executions(symbol = stock_id)
+        if resp:
+            self.last_trader_price = resp[len(resp)-1].price
+            return
+        
+        # 再找历史成交记录
         resp = self.trade_ctx.history_executions(
             # symbol = "700.HK",
             symbol = stock_id,
@@ -65,15 +79,21 @@ class LongPortData():
             end_at = datetime.today(),
         )
         if resp:
-            self.last_trader_price = resp[0].trades[0].price
-        print(resp)
+            self.last_trader_price = resp[len(resp)-1].price
+        logger.info(resp)
 
     def get_current_price(self, stock_id):
         # resp = ctx.quote(["700.HK", "AAPL.US", "TSLA.US", "NFLX.US"])
         resp = self.quote_ctx.quote(stock_id)
-        print(resp)
 
-        return resp[0].last_done
+        logger.info(resp)
+
+        if self.market_during_time == 0:
+            return resp[0].last_done
+        elif self.market_during_time == 'pre_market_quote':
+            return resp[0].pre_market_quote.last_done
+        elif self.market_during_time == 'post_market_quote':
+            return resp[0].post_market_quote.last_done
     
     def buy(self,stock_id, price, amount, order_id = None):
         if order_id:
@@ -84,9 +104,8 @@ class LongPortData():
                     price = Decimal(price),
                 )
             except OpenApiException as e:
-                print("replace buy order error")
-                print(e.code)             
-                print(e.message)             
+                logger.info("replace buy order error")
+                logger.info(e)           
         else:
             try:
                 resp = self.trade_ctx.submit_order(
@@ -100,15 +119,14 @@ class LongPortData():
                 )
                 order_id = resp.order_id
             except OpenApiException as e:
-                print("submit buy order error")
-                print(e.code)
-                print(e.message)
+                logger.info("submit buy order error")
+                logger.info(e)
 
         return order_id
     
 
     def sell(self,stock_id, price, amount, order_id = None):
-        if order_id:
+        if order_id != None and self.check_order_status(order_id) != OrderStatus.Filled:
             try:
                 resp = self.trade_ctx.replace_order(
                     order_id = order_id,
@@ -116,9 +134,8 @@ class LongPortData():
                     price = Decimal(price),
                 )
             except OpenApiException as e:
-                print("replace sell order error")
-                print(e.code)             
-                print(e.message)             
+                logger.info("replace sell order error")
+                logger.info(e)           
         else:
             try:
                 resp = self.trade_ctx.submit_order(
@@ -132,69 +149,69 @@ class LongPortData():
                 )
                 order_id = resp.order_id
             except OpenApiException as e:
-                print("submit sell order error")
-                print(e.code)
-                print(e.message)
+                logger.info("submit sell order error")
+                logger.info(e)
 
         return order_id
     
     def check_order_status(self, order_id):
+        if not order_id:
+            return OrderStatus.Unknown
+
         resp = self.trade_ctx.order_detail(
             order_id = order_id,
         )
-        print(resp)
         return resp.status
     
     def check_stock_positions(self, stock_id):
         self.stock_positions = self.trade_ctx.stock_positions()
 
-        # print(resp)
-        # return resp.status
+        logger.info(self.stock_positions)
+        # 有坑，symbol 前面是不带0的
+        for stock_position in self.stock_positions.channels[0].positions:
+            if stock_position.symbol_name == self.symbol_name or stock_position.symbol == stock_id:
+                if stock_position.quantity > 0:
+                    return True
+              
+        return False
 
-    '''
-    下单购买逻辑：
-    1、查询当前价格
-    2、下单购买
-    3、一分钟后，追踪订单成交状态
-    4、若订单未成交，撤销订单。重新下单，重复1-4
-    5、若订单成交，记录成交价格
-    '''
+    def check_market(self, stock_id):
+        # 补充 symbol_name
+        resp = self.quote_ctx.static_info([stock_id])
+        self.symbol_name = resp[0].name_en
+        logger.info("symbol_name %s", self.symbol_name)
 
+        # 获取股票所在市场
+        market = stock_id.split('.')[1]
+        self.market = market
+        # 获取当前时间
+        currentDateAndTime = datetime.now()
 
-if __name__ == '__main__':
-    stock_id = "01810.HK"
-    stock_id = "MSTX.US"
-    data = LongPortData()
-    data.get_last_trade_price(datetime(2023, 12, 1), stock_id)
+        logger.info("The current date and time is %s", currentDateAndTime)
+        # Output: The current date and time is 2022-03-19 10:05:39.482383
 
-
-    order_id = None
-    while True:
-        # 查看当前市场
-
-        # 第一次运行，若无上一次交易记录
-        if data.last_trader_price == 0.0:
-            status = "WaitToNew"
-            order_id = None
-            while status  != "Filled":
-                current_price = data.get_current_price([stock_id])
-                order_id = data.buy(stock_id=stock_id, price=current_price, amount=200, order_id=order_id)
-                print(order_id)
-
-                # 暂停程序执行10秒
-                time.sleep(10)
-
-                status = data.check_order_status(order_id)
-
-            
-            data.last_trader_price = current_price
-
-        # # 开始网格交易
-        # current_price = data.get_current_price(["01810.HK"])
-        # if current_price - data.last_trader_price > 0.5:
-        #     order_id = data.sell(stock_id="01810.HK", price=0.1, amount=200, order_id=order_id)
-        #     # 如果是卖空
-        #     if not order_id:
-        #         data.last_trader_price = 0.0
-        # elif current_price - data.last_trader_price < -0.5:
-        #     order_id = data.buy(stock_id="01810.HK", price=0.1, amount=200, order_id=order_id)
+        currentTime = currentDateAndTime.strftime("%H:%M:%S")
+        # 判断当前时间是否在交易时间内
+        is_market_time = False
+        for index,during_time in enumerate(self.market_time[self.market]):
+            if self.market_time[market][during_time]["begin"] <= currentTime and currentTime <= self.market_time[market][during_time]["end"]:
+                logger.info("Market is in %s", during_time)
+                is_market_time = True
+                break
+ 
+        if not is_market_time:
+            self.market_during_time = None
+            logger.info("Market is not in %s", during_time)
+            return False
+        else:
+            self.market_during_time = during_time
+            return True
+        
+    def delete_today_order(self, stock_id):
+        resp = self.trade_ctx.today_orders(
+            symbol = stock_id,
+        )
+        for order in resp:
+            if order.status !=OrderStatus.Filled and order.status != OrderStatus.Canceled and order.status != OrderStatus.Rejected:
+                logger.info("Cancel Order %d",order.order_id)
+                self.trade_ctx.cancel_order(order.order_id)
