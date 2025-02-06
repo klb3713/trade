@@ -7,7 +7,7 @@ import sys
 import os
 import logging
 from logging.handlers import TimedRotatingFileHandler
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("NetTrader")
 
 def init_log(log_path):
     # 初始化log
@@ -55,18 +55,19 @@ if __name__ == '__main__':
     # 配置
     stock_id = "MSTX.US"
     # stock_id = "01810.HK"
-    first_amount = 200
-    amount = 200
+    first_amount = 80
+    amount = 20
     delta_price = 0.5
 
     data = LongPortData()
-    data.get_last_trade_price(datetime(2023, 12, 1), stock_id)
+    data.get_last_trade_price(datetime(2024, 12, 1), stock_id)
 
     # 删除今天的未成交订单
     data.delete_today_order(stock_id)
 
     order_id = None
     while True:
+        logger.info("==========================")
         # 查看当前市场
         if not data.check_market(stock_id):
             # 待机60秒
@@ -114,3 +115,5 @@ if __name__ == '__main__':
         if status == OrderStatus.Filled:
             order_id = None
             data.last_trader_price = current_price
+        
+        logger.info("==========================")

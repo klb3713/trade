@@ -6,7 +6,7 @@ import time
 import logging
 
 # 初始化log
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("NetTrader")
 
 class LongPortData():
     '''
@@ -191,9 +191,26 @@ class LongPortData():
         # Output: The current date and time is 2022-03-19 10:05:39.482383
 
         currentTime = currentDateAndTime.strftime("%H:%M:%S")
+        logger.info("currentTime %s", currentTime)
+
         # 判断当前时间是否在交易时间内
         is_market_time = False
         for index,during_time in enumerate(self.market_time[self.market]):
+            logger.info("during_time %s", during_time)
+            logger.info("during_time begin %s", self.market_time[market][during_time]["begin"])
+            logger.info("during_time end %s", self.market_time[market][during_time]["end"])
+
+            if during_time == 0:
+                if self.market_time[market][during_time]["begin"] < currentTime and currentTime < "24:00:00":
+                    logger.info("Market is in %s", during_time)
+                    is_market_time = True
+                    break
+
+                elif "00:00:00" < currentTime and currentTime < self.market_time[market][during_time]["end"]:
+                    logger.info("Market is in %s", during_time)
+                    is_market_time = True
+                    break
+
             if self.market_time[market][during_time]["begin"] <= currentTime and currentTime <= self.market_time[market][during_time]["end"]:
                 logger.info("Market is in %s", during_time)
                 is_market_time = True
