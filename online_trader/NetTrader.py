@@ -3,8 +3,27 @@ from datetime import datetime
 from longport.openapi import OrderStatus
 import time
 from LongPortData import LongPortData
+import sys
+import os
 import logging
+from logging.handlers import TimedRotatingFileHandler
 logger = logging.getLogger(__name__)
+
+def init_log(log_path):
+    # 初始化log
+    logger.setLevel(logging.INFO)
+
+    # 创建一个handler，用于写入日志文件，每天一个文件，保留30天
+    log_path = os.path.join(log_path,'net_trader.log')
+    handler = TimedRotatingFileHandler(log_path, when='D', interval=1, backupCount=30)
+    handler.setLevel(logging.INFO)
+
+    # 创建一个输出格式
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+
+    # 添加handler到logger
+    logger.addHandler(handler)
 
 '''
     下单购买逻辑：
@@ -16,12 +35,22 @@ logger = logging.getLogger(__name__)
 '''
 
 if __name__ == '__main__':
-
+    
     # 初始化log
-    logging.basicConfig(filename='/home/wangzk/Downloads/wangchenan/trade/net_trader.log', level=logging.INFO,
-                        datefmt='%Y/%m/%d %H:%M:%S',
-                        format='%(asctime)s - %(name)s - %(levelname)s - %(lineno)d - %(module)s - %(message)s')
+    log_path = ""
+    # 打印所有命令行参数
+    print("命令行参数:")
+    for arg in sys.argv:
+        print(arg)
+    
+    # 访问特定的命令行参数
+    if len(sys.argv) > 1:
+        log_path = sys.argv[1]
+        print("第一个参数:", sys.argv[1])
+
+    init_log(log_path)
     logger.info('Started')
+
 
     # 配置
     stock_id = "MSTX.US"

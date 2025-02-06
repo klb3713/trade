@@ -27,9 +27,11 @@ if __name__ == '__main__':
     ## xiaomi
     stock_ids = "01810.HK"
     stock_ids = "TSLA.US"
+    stock_ids = "IBB.US"
+    stock_ids = "MSTX.US"
 
     # data = dataset.fetch_data(stock_ids = stock_ids,start_time = "20231205",end_time = "20241223")
-    data = dataset.fetch_data(stock_ids = stock_ids,start_time = "20241105",end_time = "20241223")
+    data = dataset.fetch_data(stock_ids = stock_ids,start_time = "20231105",end_time = "20241223")
     
     # 历史收益率、波动方差、标准差计算
 
@@ -67,4 +69,5 @@ if __name__ == '__main__':
     print('夏普比例: ', result[0].analyzers.SharpeRatio.get_analysis()['sharperatio'])
     print('最大回撤: ', result[0].analyzers.DrawDown.get_analysis()['drawdown'])
 
-    cerebro.plot()
+    img = cerebro.plot()
+    img[0][0].savefig(f'cerebro.png')
