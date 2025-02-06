@@ -10,6 +10,7 @@ from strategy import RSI_SMA_MACD
 from strategy import MeanReversion
 from strategy import MeanReversionByStop
 from strategy import NetTrade
+from statistics import Cointegration
 
 # plt.rcParams["font.sans-serif"] = ['SimHei']
 # plt.rcParams["axes.unicode_minus"] = False
@@ -34,6 +35,8 @@ if __name__ == '__main__':
     data = dataset.fetch_data(stock_ids = stock_ids,start_time = "20231105",end_time = "20241223")
     
     # 历史收益率、波动方差、标准差计算
+    stat = Cointegration(data)
+    stat.process()
 
     # Create a cerebro entity
     cerebro = bt.Cerebro()
