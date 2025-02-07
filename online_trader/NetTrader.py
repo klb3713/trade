@@ -54,6 +54,7 @@ if __name__ == '__main__':
 
     # 配置
     stock_id = "MSTX.US"
+    stock_id = "MSTZ.US"
     # stock_id = "01810.HK"
     first_amount = 80
     amount = 20

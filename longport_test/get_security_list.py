@@ -1,4 +1,26 @@
 from longport.openapi import QuoteContext, Config, Market, SecurityListCategory
+import json
+import logging
+import os
+from logging.handlers import TimedRotatingFileHandler
+
+logger = logging.getLogger("stocks_list")
+# 初始化log
+logger.setLevel(logging.INFO)
+
+# 创建一个handler，用于写入日志文件，每天一个文件，保留30天
+log_path = os.path.join("",'stocks_list.log')
+handler = TimedRotatingFileHandler(log_path, when='D', interval=1, backupCount=30)
+handler.setLevel(logging.INFO)
+
+# 创建一个输出格式
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+
+# 添加handler到logger
+logger.addHandler(handler)
+
+logger.info('Started')
 
 config = Config(
             app_key="fddd1f64ad477d0aea79928c749cc581",
@@ -7,4 +29,4 @@ config = Config(
             enable_overnight=True)
 ctx = QuoteContext(config)
 resp = ctx.security_list(Market.US, SecurityListCategory.Overnight)
-print(resp)
+logger.info(resp) 
