@@ -6,3 +6,4 @@ pandas
 yfinance
 statsmodels
 arch
+ccxt
