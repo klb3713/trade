@@ -53,8 +53,6 @@ class LongPortData(Borg):
             self.account_balance = self.trade_ctx.account_balance()
             # 持仓信息
             self.stock_positions = self.trade_ctx.stock_positions()
-            # 历史交易记录
-            self.last_trader_price = 0.0
 
             # 市场
             self.market = None
@@ -90,6 +88,10 @@ class LongPortData(Borg):
             # 上一时刻价格
             self.last_price = 0.0
 
+            # 历史烛图
+            self.history_candlesticks = None
+            self.candlestick_amount = config["longport"]["candlestick_amount"]
+
             logger.info(self.account_balance)
             logger.info(self.stock_positions)
 
@@ -97,8 +99,8 @@ class LongPortData(Borg):
         # 先找当日成交记录
         resp = self.trade_ctx.today_executions(symbol=stock_id)
         if resp:
-            self.last_trader_price = resp[len(resp) - 1].price
-            return
+            last_trader_price = resp[len(resp) - 1].price
+            return last_trader_price
 
         # 再找历史成交记录
         resp = self.trade_ctx.history_executions(
@@ -109,8 +111,10 @@ class LongPortData(Borg):
             end_at=datetime.today(),
         )
         if resp:
-            self.last_trader_price = resp[len(resp) - 1].price
-        logger.info(resp)
+            last_trader_price = resp[len(resp) - 1].price
+            return last_trader_price
+
+        return Decimal(0.0)
 
     def get_current_price(self, stock_id):
         # resp = ctx.quote(["700.HK", "AAPL.US", "TSLA.US", "NFLX.US"])
@@ -133,10 +137,7 @@ class LongPortData(Borg):
         logger.info(self.stock_positions)
         # 有坑，symbol 前面是不带0的
         for stock_position in self.stock_positions.channels[0].positions:
-            if (
-                stock_position.symbol_name == self.symbol_name
-                or stock_position.symbol == stock_id
-            ):
+            if stock_position.symbol in stock_id:
                 if stock_position.quantity > 0:
                     return True
 
@@ -145,8 +146,8 @@ class LongPortData(Borg):
     def check_market(self, stock_id):
         # 补充 symbol_name
         resp = self.quote_ctx.static_info([stock_id])
-        self.symbol_name = resp[0].name_en
-        logger.info(f"symbol_name {self.symbol_name}")
+        # self.symbol_name = resp[0].name_en
+        # logger.info(f"symbol_name {self.symbol_name}")
 
         # 获取股票所在市场
         market = stock_id.split(".")[1]
@@ -179,7 +180,7 @@ class LongPortData(Borg):
                     self.market_time[market][during_time]["begin"] < currentTime
                     and currentTime < "24:00:00"
                 ):
-                    logger.info("Market is in %s", during_time)
+                    logger.info(f"Market is in {during_time}")
                     is_market_time = True
                     break
 
@@ -187,7 +188,7 @@ class LongPortData(Borg):
                     "00:00:00" < currentTime
                     and currentTime < self.market_time[market][during_time]["end"]
                 ):
-                    logger.info("Market is in %s", during_time)
+                    logger.info(f"Market is in {during_time}")
                     is_market_time = True
                     break
 
@@ -214,16 +215,35 @@ class LongPortData(Borg):
         logger.info(self.account_balance)
         return self.account_balance
 
+    def get_history_candlesticks(self, stock_id, period=Period.Day):
+        """
+        获取历史烛图数据
+        :param stock_id: 股票代码
+        :param period: 烛图周期
+        :return: 历史烛图数据
+        """
+        try:
+            candlesticks = self.quote_ctx.candlesticks(
+                stock_id,
+                period,
+                self.candlestick_amount,
+                AdjustType.ForwardAdjust,
+            )
+        except OpenApiException as e:
+            logger.error(f"Error fetching candlestick data: {e}")
+            return None
+        return candlesticks
+
     # 更新信息
-    def update_info(self, stock_id):
-        # 价格、成交量
-        price = self.get_current_price(stock_id)
-        if price is not self.current_price:
-            self.last_price = self.current_price
-            self.current_price = price
-            logger.info(f"Current price for {stock_id}: {self.current_price}")
-        else:
-            logger.info(f"No change current price for {stock_id}")
+    def update_info(self):
+        # # 价格、成交量
+        # price = self.get_current_price(stock_id)
+        # if price is not self.current_price:
+        #     self.last_price = self.current_price
+        #     self.current_price = price
+        #     logger.info(f"Current price for {stock_id}: {self.current_price}")
+        # else:
+        #     logger.info(f"No change current price for {stock_id}")
 
         # 账户信息
         self.account_balance = self.trade_ctx.account_balance()
@@ -231,6 +251,9 @@ class LongPortData(Borg):
         # 持仓信息
         self.stock_positions = self.trade_ctx.stock_positions()
         logger.info(f"Stock positions: {self.stock_positions}")
+
+        # # 历史烛图
+        # self.history_candlesticks = self.get_history_candlesticks(stock_id)
         # # 历史交易记录
         # self.get_last_trade_price(datetime.today(), stock_id)
         # logger.info(f"Last trader price: {self.last_trader_price}")
