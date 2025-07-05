@@ -37,9 +37,6 @@ class NetTrade(bt.Strategy):
         print('当前总资产', self.broker.getvalue())
         print('当前持仓量', self.broker.getposition(self.data).size)
         print('当前持仓成本', self.broker.getposition(self.data).price)
-        # 也可以直接获取持仓
-        print('当前持仓量', self.getposition(self.data).size)
-        print('当前持仓成本', self.getposition(self.data).price)
 
         # 订单是否
         if self.order:

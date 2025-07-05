@@ -9,6 +9,7 @@ from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
 import threading
+import time
 from decimal import Decimal
 
 from backtrader.broker import BrokerBase
@@ -17,7 +18,7 @@ from backtrader.position import Position
 from backtrader.utils.py3 import queue, with_metaclass
 
 # 依赖 longport-openapi 官方 SDK
-from longport.openapi import TradeContext, Config, OrderSide, OrderType, TimeInForceType, PushOrderChanged, OrderStatus
+from longport.openapi import TradeContext, Config, OrderSide, OrderType, TimeInForceType, PushOrderChanged, OrderStatus, TopicType
 from backtrader.order import BuyOrder, SellOrder, Order
 from longport_bt import longportstore 
 
@@ -41,6 +42,7 @@ class LongPortBroker(with_metaclass(MetaLongPortBroker, BrokerBase)):
         super(LongPortBroker, self).__init__()
         self.lp = self._store(**kwargs)
         self.ctx = self.lp.trade_ctx
+        self.startingcash = 0.0
         self._cash = 0.0
         self._value = 0.0
         self._positions = dict()  # symbol -> Position
@@ -51,15 +53,19 @@ class LongPortBroker(with_metaclass(MetaLongPortBroker, BrokerBase)):
         self._order_ref_map = {}     # 本地 order.ref -> order
         self._order_id_to_ref = {}   # longport order_id -> order.ref
         self._userhist = []          # 历史订单导入
-        self.ctx.set_on_order_changed(self._on_order_changed)
+
 
     def start(self):
         super(LongPortBroker, self).start()
         self._update_account()
         self._update_positions()
+        self.startingcash = self._cash
+        self.ctx.set_on_order_changed(self._on_order_changed)
+        self.ctx.subscribe([TopicType.Private])
 
     def stop(self):
         super(LongPortBroker, self).stop()
+        self.ctx.unsubscribe([TopicType.Private])
         pass
 
     def _update_account(self):
@@ -79,16 +85,13 @@ class LongPortBroker(with_metaclass(MetaLongPortBroker, BrokerBase)):
                 self._positions[pos.symbol] = Position(size=float(pos.quantity), price=float(pos.cost_price))
 
     def getcash(self):
-        self._update_account()
         return self._cash
 
     def getvalue(self, datas=None):
-        self._update_account()
         return self._value
 
     def getposition(self, data):
         symbol = getattr(data, 'symbol', None) or getattr(data, '_name', None)
-        self._update_positions()
         pos = self._positions.get(symbol)
         if pos:
             return pos
@@ -140,6 +143,7 @@ class LongPortBroker(with_metaclass(MetaLongPortBroker, BrokerBase)):
         kwargs.update({k: v for k, v in extra.items() if v is not None})
         try:
             resp = self.ctx.submit_order(**kwargs)
+            time.sleep(50)
             order.order_id = resp.order_id
             self._orders[resp.order_id] = order
             self._order_id_to_ref[resp.order_id] = order.ref
@@ -197,6 +201,7 @@ class LongPortBroker(with_metaclass(MetaLongPortBroker, BrokerBase)):
         return self.p.commission
 
     def _on_order_changed(self, event: PushOrderChanged):
+        print("_on_order_changed")
         order_id = event.order_id
         status = event.status
         order = self._orders.get(order_id)

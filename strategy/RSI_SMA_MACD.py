@@ -17,6 +17,8 @@ class RSI_SMA_MACD(StrategySelfBase):
         self.inds = dict()
         for i, d in enumerate(self.datas):
             self.inds[d] = dict()
+            self.inds[d]['firstbaropen'] = d.open[1]
+            self.inds[d]['earnmoney'] = 0.0
             self.inds[d]['sma5'] = bt.ind.SMA(d.close, period=self.p.period_sma5)
             self.inds[d]['sma20'] = bt.ind.SMA(d.close, period=self.p.period_sma20)
             self.inds[d]['crossover'] = bt.ind.CrossOver(self.inds[d]['sma5'], self.inds[d]['sma20'])
