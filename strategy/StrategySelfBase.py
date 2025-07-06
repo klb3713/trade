@@ -10,7 +10,7 @@ class StrategySelfBase(bt.Strategy):
         self.inds = dict()
         for i, d in enumerate(self.datas):
             self.inds[d] = dict()
-            self.inds[d]['firstbaropen'] = d.open[1]
+            self.inds[d]['firstbaropen'] = 0.0
             self.inds[d]['earnmoney'] = 0.0
 
 
@@ -19,6 +19,10 @@ class StrategySelfBase(bt.Strategy):
         if self.doprint:
             dt = dt or self.datas[0].datetime.date(0)
             print('%s, %s' % (dt.isoformat(), txt))
+
+    def nextstart(self):
+        for i, d in enumerate(self.datas):
+            self.inds[d]['firstbaropen'] = d.open[0]
 
     def next(self):
         self.log('Warning Run StrategySelfBase!')
