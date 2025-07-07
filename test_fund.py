@@ -6,25 +6,8 @@ import pandas as pd
 from backtesting import Strategy
 from backtesting.lib import crossover
 from backtesting import Backtest
-import akshare as ak
+from dataloader import AkshareData
 import pandas_ta as ta
-
-df = ak.fund_open_fund_info_em(symbol="018124", indicator="累计净值走势")
-
-df["trade_date"] = pd.to_datetime(df["净值日期"])
-df.set_index("trade_date", inplace=True)
-df.index.name = "Datetime"
-df.sort_index(inplace=True)
-df['Open'] = df['High'] = df['Low'] = df['Close'] = df['累计净值']
-# 设置今日的开盘价为昨日的收盘价
-df.Open = df.Close.shift(1, fill_value=1.0)
-
-for idx, data in df.iterrows():
-    df.loc[idx, 'High'] = max(data.Open, data.Close)
-    df.loc[idx, 'Low'] = min(data.Open, data.Close)
-
-# 保留近一年的数据用来回测
-df = df.tail(250)
 
 def SMA(values, n):
     """
@@ -74,6 +57,10 @@ class SmaCross(Strategy):
             if self.trades[0].pl_pct > 0.2 or crossover(self.sma2, self.sma1):
                 self.position.close()
 
+
+df = AkshareData.get_fund_data("017847", '1_year')
+# print(df.head())
+# print(ta.max_drawdown(pd.Series(df.Close)))
 
 bt = Backtest(df, SmaCross, cash=10000, commission=.002)
 stats = bt.run()
