@@ -8,7 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime
 from dotenv import load_dotenv
-from longport.openapi import TradeContext, Config, OrderSide, OrderType, TimeInForceType
+from longport.openapi import QuoteContext, TradeContext, Config, OrderSide, OrderType, TimeInForceType
 
 # 加载环境变量
 load_dotenv()  # 从 .env 文件加载环境变量
@@ -16,7 +16,7 @@ load_dotenv()  # 从 .env 文件加载环境变量
 # --- 配置参数 ---
 GET_API_URL = os.getenv("FUTU_POSITION_URL")  # 请替换为您的实际 GET 接口 URL
 TRADE_API_URL = "YOUR_TRADE_API_URL_HERE" # 请替换为您的实际交易接口 URL (如果实际有交易接口，否则可以注释)
-POLLING_INTERVAL_SECONDS = 60 # 轮询间隔（秒）
+POLLING_INTERVAL_SECONDS = 5 # 轮询间隔（秒）
 LOCAL_DATA_FILE = "last_known_stock_data.json" # 存储上次数据的本地文件名
 
 # --- 邮件发送配置 ---
@@ -29,12 +29,11 @@ SMTP_PORT = 465 # QQ 邮箱 SMTP 服务的 SSL 端口
 
 class LongPortTrader():
     '''LongPort Store for backtrader'''
-    BrokerCls = None  # broker class will autoregister
-    DataCls = None    # data class will auto register
 
     def __init__(self, **kwargs):
         self.config = Config.from_env()
         self.ctx = TradeContext(self.config)
+        self.quote_ctx = QuoteContext(self.config)
         self.usd_balance = 102640.00
 
     def track_and_trade(self, json_output):
@@ -69,14 +68,29 @@ class LongPortTrader():
             target_value = total_capital * target_ratio
             target_qty = int(target_value / current_price) if current_price > 0 else 0
 
+            # 计算需要买入或卖出的数量
+            qty_diff = target_qty - current_qty
+
+            # 获取该股票最新的价格
+            cur_quote = self.quote_ctx.quote([stock_code])[0]
+            cur_quote_list = [(cur_quote.timestamp, cur_quote.last_done),
+                              (cur_quote.pre_market_quote.timestamp, cur_quote.pre_market_quote.last_done),
+                              (cur_quote.post_market_quote.timestamp, cur_quote.post_market_quote.last_done)]
+            cur_quote_list.sort(key=lambda x: x[0], reverse=True)
+            online_price = cur_quote_list[0][1]
+            if change_type == "OPEN" or qty_diff > 0:
+                current_price = min(online_price, current_price)
+            elif change_type == "CLOSE" or qty_diff < 0:
+                current_price = max(online_price, current_price)
+
             # 获取最大可买入数量作为参考
-            max_purchase = self.ctx.estimate_max_purchase_quantity(
-                symbol=stock_code,
-                order_type=OrderType.LO,
-                side=OrderSide.Buy,
-                price=Decimal(current_price)
-            )
-            print(f"最大可买入数量: {max_purchase.cash_max_qty}")
+            # max_purchase = self.ctx.estimate_max_purchase_quantity(
+            #     symbol=stock_code,
+            #     order_type=OrderType.LO,
+            #     side=OrderSide.Buy,
+            #     price=Decimal(current_price)
+            # )
+            # print(f"最大可买入数量: {max_purchase.cash_max_qty}")
 
             if change_type == "OPEN" and target_qty > 0 and current_qty == 0:
                 print(f"准备开仓买入 {stock_code}，数量: {target_qty}，价格: {current_price}")
@@ -104,9 +118,6 @@ class LongPortTrader():
                     remark=f"Auto sell {current_qty} shares"
                 )
                 continue
-
-            # 计算需要买入或卖出的数量
-            qty_diff = target_qty - current_qty
 
             # 执行交易
             if qty_diff > 0:  # 需要买入
@@ -390,7 +401,7 @@ def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_emai
 
 # --- 主程序逻辑 ---
 def main():
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓监测程序启动...")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓监测程序启动...", flush=True)
 
     last_known_full_data = load_last_known_data()
     longport_trader = LongPortTrader()
@@ -427,6 +438,8 @@ def main():
             last_known_full_data = current_full_data
 
         time.sleep(POLLING_INTERVAL_SECONDS)
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 新一轮查询开始...", flush=True)
+
 
 if __name__ == "__main__":
     main()
