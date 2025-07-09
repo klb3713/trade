@@ -3,10 +3,12 @@ import json
 import time
 import os
 import smtplib
+from decimal import Decimal
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime
 from dotenv import load_dotenv
+from longport.openapi import TradeContext, Config, OrderSide, OrderType, TimeInForceType
 
 # 加载环境变量
 load_dotenv()  # 从 .env 文件加载环境变量
@@ -23,6 +25,123 @@ SENDER_PASSWORD = os.getenv("QQ_EMAIL_SENDER_PASSWORD") # 从环境变量中读�
 RECEIVER_EMAIL = "klb3713@qq.com" # 收件人邮箱
 SMTP_SERVER = "smtp.qq.com"
 SMTP_PORT = 465 # QQ 邮箱 SMTP 服务的 SSL 端口
+
+
+class LongPortTrader():
+    '''LongPort Store for backtrader'''
+    BrokerCls = None  # broker class will autoregister
+    DataCls = None    # data class will auto register
+
+    def __init__(self, **kwargs):
+        self.config = Config.from_env()
+        self.ctx = TradeContext(self.config)
+        self.usd_balance = 102640.00
+
+    def track_and_trade(self, json_output):
+        """
+        根据持仓变化数据执行跟踪下单
+
+        参数:
+            json_output (dict): generate_change_data 返回的结构化数据
+        """
+
+        # 获取当前所有持仓
+        current_positions = []
+        resp = self.ctx.stock_positions()
+        if resp.channels:
+            current_positions = resp.channels[0].positions
+
+        # 处理每个变化项
+        for change in json_output.get("changes", []):
+            stock_code = change["stock_code"]
+            current_price = change["current_price"]
+            change_type = change["change_type"]
+
+            # 获取该股票的当前持仓
+            current_position = next((pos for pos in current_positions if pos.symbol == stock_code), None)
+            current_qty = current_position.quantity if current_position else 0
+
+            # 计算目标仓位（这里只是一个示例，实际逻辑可能更复杂）
+            target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
+
+            # 假设总市值资金为账户余额的一定比例（这只是一个简单示例）
+            total_capital = self.usd_balance
+            target_value = total_capital * target_ratio
+            target_qty = int(target_value / current_price) if current_price > 0 else 0
+
+            # 获取最大可买入数量作为参考
+            max_purchase = self.ctx.estimate_max_purchase_quantity(
+                symbol=stock_code,
+                order_type=OrderType.LO,
+                side=OrderSide.Buy,
+                price=Decimal(current_price)
+            )
+            print(f"最大可买入数量: {max_purchase.cash_max_qty}")
+
+            if change_type == "OPEN" and target_qty > 0 and current_qty == 0:
+                print(f"准备开仓买入 {stock_code}，数量: {target_qty}，价格: {current_price}")
+                # 提交买入订单（这里只是一个示例，实际应检查余额、保证金等）
+                resp = self.ctx.submit_order(
+                    symbol=stock_code,
+                    order_type=OrderType.LO,
+                    side=OrderSide.Buy,
+                    submitted_quantity=Decimal(target_qty),
+                    time_in_force=TimeInForceType.Day,
+                    submitted_price=Decimal(current_price),
+                    remark=f"Auto buy {target_qty} shares"
+                )
+                continue
+
+            elif change_type == "CLOSE" and current_qty > 0:
+                print(f"准备清仓卖出 {stock_code}，数量: {-current_qty}，价格: {current_price}")
+                resp = self.ctx.submit_order(
+                    symbol=stock_code,
+                    order_type=OrderType.LO,
+                    side=OrderSide.Sell,
+                    submitted_quantity=Decimal(current_qty),
+                    time_in_force=TimeInForceType.Day,
+                    submitted_price=Decimal(current_price),
+                    remark=f"Auto sell {current_qty} shares"
+                )
+                continue
+
+            # 计算需要买入或卖出的数量
+            qty_diff = target_qty - current_qty
+
+            # 执行交易
+            if qty_diff > 0:  # 需要买入
+                print(f"准备买入 {stock_code}，数量: {qty_diff}，价格: {current_price}")
+
+                # 提交买入订单（这里只是一个示例，实际应检查余额、保证金等）
+                resp = self.ctx.submit_order(
+                    symbol=stock_code,
+                    order_type=OrderType.LO,
+                    side=OrderSide.Buy,
+                    submitted_quantity=Decimal(qty_diff),
+                    time_in_force=TimeInForceType.Day,
+                    submitted_price=Decimal(current_price),
+                    remark=f"Auto buy {qty_diff} shares"
+                )
+                print(f"买入订单提交结果: {resp}")
+
+            elif qty_diff < 0:  # 需要卖出
+                print(f"准备卖出 {stock_code}，数量: {-qty_diff}，价格: {current_price}")
+
+                # 提交卖出订单（这里只是一个示例，实际应检查持仓）
+                resp = self.ctx.submit_order(
+                    symbol=stock_code,
+                    order_type=OrderType.LO,
+                    side=OrderSide.Sell,
+                    submitted_quantity=Decimal(abs(qty_diff)),
+                    time_in_force=TimeInForceType.Day,
+                    submitted_price=Decimal(current_price),
+                    remark=f"Auto sell {abs(qty_diff)} shares"
+                )
+                print(f"卖出订单提交结果: {resp}")
+
+            else:
+                print(f"{stock_code} 无需调整，当前持仓已匹配目标")
+
 
 # --- 辅助函数 ---
 def load_last_known_data():
@@ -128,22 +247,6 @@ def send_email(subject, html_content):
     except Exception as e:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 发送邮件失败: {e}")
 
-def create_email_card_html(changed_items, total_market_ratio):
-    """
-    根据变化的数据和总市值比例创建类似图片样式的 HTML 卡片内容。
-    """
-    current_time = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
-    html_template = f"""
-    <div style="font-family: Arial, sans-serif; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; max-width: 600px; margin: 20px auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-        <div style="font-size: 18px; font-weight: bold; color: #333; margin-bottom: 15px;">调仓历史 - {current_time}</div>
-        <hr style="border: none; border-top: 1px solid #eee; margin-bottom: 15px;">
-        {generate_change_data(changed_items, total_market_ratio)}
-        <div style="font-size: 12px; color: #888; margin-top: 20px;">
-            此邮件由自动化程序发送，请勿直接回复。
-        </div>
-    </div>
-    """
-    return html_template
 
 def generate_change_data(changed_items, total_market_ratio):
     current_time = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
@@ -159,6 +262,7 @@ def generate_change_data(changed_items, total_market_ratio):
     for item_old, item_new in changed_items:
         stock_name = ""
         stock_code = ""
+        market = 0
         old_total_ratio = 0
         new_total_ratio = 0
         display_current_price = 0 # 用于显示的参考成交价
@@ -167,9 +271,15 @@ def generate_change_data(changed_items, total_market_ratio):
         if item_new:
             stock_name = item_new.get('stock_name', '未知股票')
             stock_code = item_new.get('stock_code', 'UNKNOWN')
+            market = item_new.get('market', 0)
         elif item_old: # 如果是删除的，从旧数据获取名称
             stock_name = item_old.get('stock_name', '未知股票')
             stock_code = item_old.get('stock_code', 'UNKNOWN')
+            market = item_old.get('market', 0)
+
+        stock_code_suffix = '.HK' if market == 1 else ''
+        stock_code_suffix = '.US' if market == 2 else ''
+        stock_code = stock_code + stock_code_suffix
 
         # 获取持仓比例
         old_total_ratio = item_old.get('total_ratio', 0) if item_old else 0
@@ -226,7 +336,7 @@ def generate_change_data(changed_items, total_market_ratio):
         changes.append(change_entry)
 
     if not changes:
-        return "", ""
+        return None, ""
 
     # 根据变化的数据和总市值比例创建类似图片样式的 HTML 卡片内容。
     sections_html_str = "\n".join(sections_html)
@@ -247,11 +357,11 @@ def generate_change_data(changed_items, total_market_ratio):
         "changes": changes
     }
 
-    return html_template, json.dumps(json_output, indent=4, ensure_ascii=False)
+    return json_output, html_template
 
 
 # --- 交易接口调用逻辑（修改为生成邮件并发送）---
-def call_trade_api(old_full_data, new_full_data, with_email=False):
+def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_email=False):
     """
     根据数据变化生成邮件卡片并发送。
     """
@@ -261,10 +371,12 @@ def call_trade_api(old_full_data, new_full_data, with_email=False):
     # 只有当确实有股票发生变化时才发送邮件
     if changed_items:
         # 生成 HTML 邮件内容 和 JSON 内容
-        html_content, json_content = generate_change_data(changed_items, total_market_ratio)
+        json_content, html_content = generate_change_data(changed_items, total_market_ratio)
         if json_content:
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 检测到股票持仓数据变化！")
-            print(json_content)
+            print(json.dumps(json_content, indent=4, ensure_ascii=False))
+            if longport_trader:
+                longport_trader.track_and_trade(json_content)
             if with_email:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备生成邮件卡片并发送...")
                 subject = f"股票持仓变动通知 - {datetime.now().strftime('%Y/%m/%d %H:%M')}"
@@ -281,6 +393,7 @@ def main():
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓监测程序启动...")
 
     last_known_full_data = load_last_known_data()
+    longport_trader = LongPortTrader()
 
     while True:
         current_full_data = fetch_current_data() # 获取完整的 data 字段内容
@@ -301,7 +414,7 @@ def main():
             
             # 使用 json.dumps 比较 record_items 的内容来判断是否真的有“股票”变化
             if json.dumps(last_record_items, sort_keys=True) != json.dumps(current_record_items, sort_keys=True):
-                call_trade_api(last_known_full_data, current_full_data, True) # 传入完整的旧数据和新数据
+                call_trade_api(last_known_full_data, current_full_data, longport_trader, True) # 传入完整的旧数据和新数据
                 save_current_data(current_full_data)
                 last_known_full_data = current_full_data
             else:
