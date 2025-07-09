@@ -15,8 +15,7 @@ load_dotenv()  # 从 .env 文件加载环境变量
 
 # --- 配置参数 ---
 GET_API_URL = os.getenv("FUTU_POSITION_URL")  # 请替换为您的实际 GET 接口 URL
-TRADE_API_URL = "YOUR_TRADE_API_URL_HERE" # 请替换为您的实际交易接口 URL (如果实际有交易接口，否则可以注释)
-POLLING_INTERVAL_SECONDS = 5 # 轮询间隔（秒）
+POLLING_INTERVAL_SECONDS = int(os.getenv("POLLING_INTERVAL_SECONDS")) # 轮询间隔（秒）
 LOCAL_DATA_FILE = "last_known_stock_data.json" # 存储上次数据的本地文件名
 
 # --- 邮件发送配置 ---
@@ -376,6 +375,7 @@ def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_emai
     """
     根据数据变化生成邮件卡片并发送。
     """
+    has_changes = False
     # 获取变化列表和当前总市值比例
     changed_items, total_market_ratio = get_changes(old_full_data, new_full_data)
 
@@ -393,10 +393,12 @@ def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_emai
                 subject = f"股票持仓变动通知 - {datetime.now().strftime('%Y/%m/%d %H:%M')}"
                 # 发送邮件
                 send_email(subject, html_content)
+            has_changes = True
         else:
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓数据无变化。")
     else:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 尽管数据整体结构有变动，但record_items内容无实质变化，不发送邮件。")
+    return has_changes
 
 
 # --- 主程序逻辑 ---
@@ -425,8 +427,9 @@ def main():
             
             # 使用 json.dumps 比较 record_items 的内容来判断是否真的有“股票”变化
             if json.dumps(last_record_items, sort_keys=True) != json.dumps(current_record_items, sort_keys=True):
-                call_trade_api(last_known_full_data, current_full_data, longport_trader, True) # 传入完整的旧数据和新数据
-                save_current_data(current_full_data)
+                has_changes = call_trade_api(last_known_full_data, current_full_data, longport_trader, True) # 传入完整的旧数据和新数据
+                if has_changes:
+                    save_current_data(current_full_data)
                 last_known_full_data = current_full_data
             else:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓数据无变化。")
