@@ -35,6 +35,91 @@ class LongPortTrader():
         self.quote_ctx = QuoteContext(self.config)
         self.usd_balance = 102640.00
 
+    def submit_order(self, symbol, order_type, side, submitted_quantity, time_in_force, submitted_price, remark):
+        """
+        提交订单的封装方法。
+
+        参数:
+            symbol (str): 股票代码
+            order_type (OrderType): 订单类型
+            side (OrderSide): 买卖方向
+            submitted_quantity (Decimal): 提交数量
+            time_in_force (TimeInForceType): 有效期类型
+            submitted_price (Decimal): 提交价格
+            remark (str): 备注信息
+
+        返回:
+            resp: API 响应对象
+        """
+        max_retries = 3  # 最大重试次数
+        retry_delay = 5  # 重试间隔（秒）
+
+        for attempt in range(max_retries):
+            try:
+                resp = self.ctx.submit_order(
+                    symbol=symbol,
+                    order_type=order_type,
+                    side=side,
+                    submitted_quantity=submitted_quantity,
+                    time_in_force=time_in_force,
+                    submitted_price=submitted_price,
+                    remark=remark
+                )
+                return resp  # 如果成功，返回响应
+
+            except requests.exceptions.RequestException as e:
+                print(f"[ERROR] 订单提交失败（网络问题），尝试次数 {attempt + 1}/{max_retries}: {str(e)}")
+                if attempt == max_retries - 1:
+                    # 达到最大重试次数后发送邮件通知
+                    error_msg = f"订单提交失败（网络问题）：{str(e)}\n股票代码：{symbol}\n操作：{side.name}\n数量：{submitted_quantity}\n价格：{submitted_price}"
+                    self.send_error_notification(error_msg)
+                    raise  # 抛出异常
+                time.sleep(retry_delay)  # 等待后重试
+
+            except Exception as e:
+                print(f"[ERROR] 订单提交失败（未知原因），尝试次数 {attempt + 1}/{max_retries}: {str(e)}")
+                if attempt == max_retries - 1:
+                    # 发送邮件通知其他类型的错误
+                    error_msg = f"订单提交失败（未知错误）：{str(e)}\n股票代码：{symbol}\n操作：{side.name}\n数量：{submitted_quantity}\n价格：{submitted_price}"
+                    self.send_error_notification(error_msg)
+                    raise  # 抛出异常
+                time.sleep(retry_delay)  # 等待后重试
+
+    def send_error_notification(self, error_message):
+        """
+        发送错误通知邮件
+        """
+        subject = "[紧急通知] 订单提交失败"
+        html_content = f"""
+                <div style="font-family: Arial, sans-serif; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; max-width: 600px; margin: 20px auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="font-size: 18px; font-weight: bold; color: #d9534f; margin-bottom: 15px;">订单提交失败通知</div>
+                    <hr style="border: none; border-top: 1px solid #eee; margin-bottom: 15px;">
+                    <div style="font-size: 14px; color: #555; margin-bottom: 10px;">时间：{datetime.now().strftime('%Y/%m/%d %H:%M:%S')}</div>
+                    <div style="font-size: 14px; color: #555; margin-bottom: 10px;">错误详情：</div>
+                    <pre style="font-size: 13px; color: #a94442; background-color: #f2dede; border: 1px solid #ebccd1; border-radius: 4px; padding: 10px; white-space: pre-wrap; word-wrap: break-word;">
+        {error_message}
+                    </pre>
+                    <div style="font-size: 12px; color: #888; margin-top: 20px;">
+                        此邮件由自动化程序发送，请勿直接回复。
+                    </div>
+                </div>
+                """
+
+        msg = MIMEMultipart('alternative')
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = RECEIVER_EMAIL
+        msg['Subject'] = subject
+
+        msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+
+        try:
+            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+                server.login(SENDER_EMAIL, SENDER_PASSWORD)
+                server.send_message(msg)
+        except Exception as e:
+            pass
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 错误通知邮件已发送到 {RECEIVER_EMAIL}。")
+
     def track_and_trade(self, json_output):
         """
         根据持仓变化数据执行跟踪下单
@@ -63,9 +148,7 @@ class LongPortTrader():
             target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
 
             # 假设总市值资金为账户余额的一定比例（这只是一个简单示例）
-            total_capital = self.usd_balance
-            target_value = total_capital * target_ratio
-            target_qty = int(target_value / current_price) if current_price > 0 else 0
+            target_qty = int(self.usd_balance * target_ratio / current_price) if current_price > 0 else 0
 
             # 计算需要买入或卖出的数量
             qty_diff = target_qty - current_qty
@@ -76,7 +159,7 @@ class LongPortTrader():
                               (cur_quote.pre_market_quote.timestamp, cur_quote.pre_market_quote.last_done),
                               (cur_quote.post_market_quote.timestamp, cur_quote.post_market_quote.last_done)]
             cur_quote_list.sort(key=lambda x: x[0], reverse=True)
-            online_price = cur_quote_list[0][1]
+            online_price = round(float(cur_quote_list[0][1]), 2)
             if change_type == "OPEN" or qty_diff > 0:
                 current_price = min(online_price, current_price)
             elif change_type == "CLOSE" or qty_diff < 0:
@@ -94,7 +177,7 @@ class LongPortTrader():
             if change_type == "OPEN" and target_qty > 0 and current_qty == 0:
                 print(f"准备开仓买入 {stock_code}，数量: {target_qty}，价格: {current_price}")
                 # 提交买入订单（这里只是一个示例，实际应检查余额、保证金等）
-                resp = self.ctx.submit_order(
+                resp = self.submit_order(
                     symbol=stock_code,
                     order_type=OrderType.LO,
                     side=OrderSide.Buy,
@@ -103,11 +186,12 @@ class LongPortTrader():
                     submitted_price=Decimal(current_price),
                     remark=f"Auto buy {target_qty} shares"
                 )
+                print(f"开仓买入订单提交结果: {resp}")
                 continue
 
             elif change_type == "CLOSE" and current_qty > 0:
                 print(f"准备清仓卖出 {stock_code}，数量: {-current_qty}，价格: {current_price}")
-                resp = self.ctx.submit_order(
+                resp = self.submit_order(
                     symbol=stock_code,
                     order_type=OrderType.LO,
                     side=OrderSide.Sell,
@@ -116,6 +200,7 @@ class LongPortTrader():
                     submitted_price=Decimal(current_price),
                     remark=f"Auto sell {current_qty} shares"
                 )
+                print(f"清仓卖出订单提交结果: {resp}")
                 continue
 
             # 执行交易
@@ -123,7 +208,7 @@ class LongPortTrader():
                 print(f"准备买入 {stock_code}，数量: {qty_diff}，价格: {current_price}")
 
                 # 提交买入订单（这里只是一个示例，实际应检查余额、保证金等）
-                resp = self.ctx.submit_order(
+                resp = self.submit_order(
                     symbol=stock_code,
                     order_type=OrderType.LO,
                     side=OrderSide.Buy,
@@ -138,7 +223,7 @@ class LongPortTrader():
                 print(f"准备卖出 {stock_code}，数量: {-qty_diff}，价格: {current_price}")
 
                 # 提交卖出订单（这里只是一个示例，实际应检查持仓）
-                resp = self.ctx.submit_order(
+                resp = self.submit_order(
                     symbol=stock_code,
                     order_type=OrderType.LO,
                     side=OrderSide.Sell,
@@ -253,10 +338,9 @@ def send_email(subject, html_content):
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.send_message(msg)
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 邮件已成功发送到 {RECEIVER_EMAIL}。")
     except Exception as e:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 发送邮件失败: {e}")
-
+        pass
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 邮件已成功发送到 {RECEIVER_EMAIL}。")
 
 def generate_change_data(changed_items, total_market_ratio):
     current_time = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
@@ -339,8 +423,8 @@ def generate_change_data(changed_items, total_market_ratio):
             "stock_name": stock_name,
             "old_ratio_percent": round(old_ratio_percent, 2),
             "new_ratio_percent": round(new_ratio_percent, 2),
-            "current_price": round(display_current_price, 3),
-            "cost_price": round(display_cost_price, 3),
+            "current_price": round(display_current_price, 2),
+            "cost_price": round(display_cost_price, 2),
             "change_type": "OPEN" if item_old is None else ("CLOSE" if item_new is None else "CHANGE")
         }
         changes.append(change_entry)
