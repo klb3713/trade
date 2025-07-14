@@ -1,3 +1,4 @@
+import pytz
 import requests
 import json
 import time
@@ -34,7 +35,26 @@ class LongPortTrader():
         self.ctx = TradeContext(self.config)
         self.quote_ctx = QuoteContext(self.config)
         self.usd_balance = 102640.00
+        self.loss_threshold = 0.02
+        self.profit_threshold = 0.05
 
+    def check_trading_hours(self, market='US'):
+        """检查当前是否在交易时间"""
+        # 获取股票市场信息
+        trading_hours = {
+            "US": {"start": "04:00", "end": "20:00"},  # 美股市场交易时间
+            "HK": {"start": "09:30", "end": "16:00"}  # 香港市场交易时间
+        }
+
+        eastern = pytz.timezone('US/Eastern')
+        hk = pytz.timezone('Asia/Hong_Kong')
+        now = datetime.now(eastern) if market == "US" else datetime.now(hk)
+        now_time = now.strftime("%H:%M")
+
+        if trading_hours[market]["start"] <= now_time <= trading_hours[market]["end"]:
+            return True
+        else:
+            return False
     def submit_order(self, symbol, order_type, side, submitted_quantity, time_in_force, submitted_price, remark):
         """
         提交订单的封装方法。
@@ -120,6 +140,65 @@ class LongPortTrader():
             pass
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 错误通知邮件已发送到 {RECEIVER_EMAIL}。")
 
+    def check_and_trade(self):
+        """
+        根据持仓情况止盈止损
+        """
+
+        # 获取当前所有持仓
+        current_positions = []
+        resp = self.ctx.stock_positions()
+        if resp.channels:
+            current_positions = resp.channels[0].positions
+
+        # 处理每个持仓
+        for position in current_positions:
+            stock_code = position.symbol
+            cost_price = float(position.cost_price)
+            current_qty = int(position.quantity)
+
+            # 获取该股票最新的价格
+            cur_quote = self.quote_ctx.quote([stock_code])[0]
+            cur_quote_list = [(cur_quote.timestamp, cur_quote.last_done),
+                              (cur_quote.pre_market_quote.timestamp, cur_quote.pre_market_quote.last_done),
+                              (cur_quote.post_market_quote.timestamp, cur_quote.post_market_quote.last_done)]
+            cur_quote_list.sort(key=lambda x: x[0], reverse=True)
+            current_price = round(float(cur_quote_list[0][1]), 2)
+
+            if not (current_price > 0 and cost_price > 0):
+                continue
+
+            if current_price < cost_price:
+                loss = (cost_price - current_price) * current_qty
+                if loss / self.usd_balance > self.loss_threshold:
+                    # 止损逻辑
+                    print(f"准备止损 {stock_code}，数量: {-current_qty}，价格: {current_price}")
+                    resp = self.submit_order(
+                        symbol=stock_code,
+                        order_type=OrderType.LO,
+                        side=OrderSide.Sell,
+                        submitted_quantity=Decimal(current_qty),
+                        time_in_force=TimeInForceType.Day,
+                        submitted_price=Decimal(current_price),
+                        remark=f"Auto sell {current_qty} shares"
+                    )
+                    print(f"止损订单提交结果: {resp}")
+            elif current_price > cost_price:
+                profit = (current_price - cost_price) * current_qty
+                if profit / self.usd_balance > self.profit_threshold:
+                    # 止盈逻辑
+                    print(f"准备止盈 {stock_code}，数量: {-current_qty}，价格: {current_price}")
+                    resp = self.submit_order(
+                        symbol=stock_code,
+                        order_type=OrderType.LO,
+                        side=OrderSide.Sell,
+                        submitted_quantity=Decimal(current_qty),
+                        time_in_force=TimeInForceType.Day,
+                        submitted_price=Decimal(current_price),
+                        remark=f"Auto Sell {current_qty} shares"
+                    )
+                    print(f"止盈订单提交结果: {resp}")
+
     def track_and_trade(self, json_output):
         """
         根据持仓变化数据执行跟踪下单
@@ -140,30 +219,29 @@ class LongPortTrader():
             current_price = change["current_price"]
             change_type = change["change_type"]
 
-            # 获取该股票的当前持仓
-            current_position = next((pos for pos in current_positions if pos.symbol == stock_code), None)
-            current_qty = current_position.quantity if current_position else 0
-
-            # 计算目标仓位（这里只是一个示例，实际逻辑可能更复杂）
-            target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
-
-            # 假设总市值资金为账户余额的一定比例（这只是一个简单示例）
-            target_qty = int(self.usd_balance * target_ratio / current_price) if current_price > 0 else 0
-
-            # 计算需要买入或卖出的数量
-            qty_diff = target_qty - current_qty
-
             # 获取该股票最新的价格
             cur_quote = self.quote_ctx.quote([stock_code])[0]
             cur_quote_list = [(cur_quote.timestamp, cur_quote.last_done),
                               (cur_quote.pre_market_quote.timestamp, cur_quote.pre_market_quote.last_done),
                               (cur_quote.post_market_quote.timestamp, cur_quote.post_market_quote.last_done)]
             cur_quote_list.sort(key=lambda x: x[0], reverse=True)
-            online_price = round(float(cur_quote_list[0][1]), 2)
-            if change_type == "OPEN" or qty_diff > 0:
-                current_price = min(online_price, current_price)
-            elif change_type == "CLOSE" or qty_diff < 0:
-                current_price = max(online_price, current_price)
+            current_price = round(float(cur_quote_list[0][1]), 2)
+
+            # 获取该股票的当前持仓
+            current_position = next((pos for pos in current_positions if pos.symbol == stock_code), None)
+            current_qty = current_position.quantity if current_position else 0
+
+            # 计算目标仓位（这里只是一个示例，实际逻辑可能更复杂）
+            target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
+            current_ratio = int(current_qty) * current_price / self.usd_balance
+            if abs(current_ratio - target_ratio) < 0.05:
+                continue
+
+            # 假设总市值资金为账户余额的一定比例（这只是一个简单示例）
+            target_qty = int(self.usd_balance * target_ratio / current_price) if current_price > 0 else 0
+
+            # 计算需要买入或卖出的数量
+            qty_diff = target_qty - current_qty
 
             # 获取最大可买入数量作为参考
             # max_purchase = self.ctx.estimate_max_purchase_quantity(
@@ -204,7 +282,7 @@ class LongPortTrader():
                 continue
 
             # 执行交易
-            if qty_diff > 0:  # 需要买入
+            if change_type == "BUY" and qty_diff > 0:  # 需要买入
                 print(f"准备买入 {stock_code}，数量: {qty_diff}，价格: {current_price}")
 
                 # 提交买入订单（这里只是一个示例，实际应检查余额、保证金等）
@@ -219,7 +297,7 @@ class LongPortTrader():
                 )
                 print(f"买入订单提交结果: {resp}")
 
-            elif qty_diff < 0:  # 需要卖出
+            elif change_type == "SELL" and qty_diff < 0:  # 需要卖出
                 print(f"准备卖出 {stock_code}，数量: {-qty_diff}，价格: {current_price}")
 
                 # 提交卖出订单（这里只是一个示例，实际应检查持仓）
@@ -402,12 +480,16 @@ def generate_change_data(changed_items, total_market_ratio):
 
         # 根据变动类型生成不同的显示
         change_text = ""
+        change_type = ""
         if item_old is None: # 新增股票
             change_text = f"0.00% -> {new_ratio_str}"
+            change_type = "OPEN"
         elif item_new is None: # 删除股票
             change_text = f"{old_ratio_str} -> 0.00%"
+            change_type = "CLOSE"
         else: # 股票数据变化
             change_text = f"{old_ratio_str} -> {new_ratio_str}"
+            change_type = "BUY" if new_total_ratio > old_total_ratio else "SELL"
 
         sections_html.append(f"""
         <div style="margin-bottom: 20px; padding: 10px; border-bottom: 1px dashed #eee;">
@@ -425,7 +507,7 @@ def generate_change_data(changed_items, total_market_ratio):
             "new_ratio_percent": round(new_ratio_percent, 2),
             "current_price": round(display_current_price, 2),
             "cost_price": round(display_cost_price, 2),
-            "change_type": "OPEN" if item_old is None else ("CLOSE" if item_new is None else "CHANGE")
+            "change_type": change_type
         }
         changes.append(change_entry)
 
@@ -493,11 +575,12 @@ def main():
     longport_trader = LongPortTrader()
 
     while True:
+        longport_trader.check_and_trade()
         current_full_data = fetch_current_data() # 获取完整的 data 字段内容
-
+        interval_seconds = POLLING_INTERVAL_SECONDS if longport_trader.check_trading_hours() else 3600
         if current_full_data is None:
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 本次获取云端数据失败，等待下次轮询。")
-            time.sleep(POLLING_INTERVAL_SECONDS)
+            time.sleep(interval_seconds)
             continue
 
         # 确保 record_items 存在，否则无法比较
@@ -524,7 +607,7 @@ def main():
             save_current_data(current_full_data)
             last_known_full_data = current_full_data
 
-        time.sleep(POLLING_INTERVAL_SECONDS)
+        time.sleep(interval_seconds)
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 新一轮查询开始...", flush=True)
 
 
