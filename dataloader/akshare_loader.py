@@ -7,7 +7,7 @@ import pandas_ta as ta
 
 class AkshareData():
     def __init__(self):
-        pass
+        self.all_fund_value_estimation = None
 
     @classmethod
     def get_fund_data(cls, symbol="018124", period="1_year"):
@@ -38,8 +38,21 @@ class AkshareData():
 
         return df
 
+    def get_fund_value_estimation(self, symbol="000001"):
+        if self.all_fund_value_estimation.empty:
+            self.update_fund_value_estimation()
+        return self.all_fund_value_estimation.loc[self.all_fund_value_estimation.基金代码 == symbol]
+
+    def update_fund_value_estimation(self):
+        self.all_fund_value_estimation = ak.fund_value_estimation_em()
+
+
 
 
 if __name__ == '__main__':
     df = AkshareData.get_fund_data("017847", '1_year')
     print(df.head())
+    akshare_data = AkshareData()
+    akshare_data.update_fund_value_estimation()
+    fund_value_estimation = akshare_data.get_fund_value_estimation("011609")
+    print(fund_value_estimation)

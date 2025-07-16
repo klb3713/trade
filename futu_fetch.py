@@ -34,9 +34,9 @@ class LongPortTrader():
         self.config = Config.from_env()
         self.ctx = TradeContext(self.config)
         self.quote_ctx = QuoteContext(self.config)
-        self.usd_balance = 102640.00
-        self.loss_threshold = 0.02
-        self.profit_threshold = 0.05
+        self.usd_balance = float(os.getenv("USD_BANLANCE", "10000.00"))
+        self.loss_threshold = float(os.getenv("LOSS_THRESHOLD", "0.01"))
+        self.profit_threshold = float(os.getenv("PROFIT_THRESHOLD", "0.04"))
 
     def check_trading_hours(self, market='US'):
         """检查当前是否在交易时间"""
