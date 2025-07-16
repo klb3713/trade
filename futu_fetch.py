@@ -231,11 +231,11 @@ class LongPortTrader():
 
             # 获取该股票的当前持仓
             current_position = next((pos for pos in current_positions if pos.symbol == stock_code), None)
-            current_qty = current_position.available_quantity if current_position else 0
+            current_qty = int(current_position.available_quantity) if current_position else 0
 
             # 计算目标仓位（这里只是一个示例，实际逻辑可能更复杂）
             target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
-            current_ratio = int(current_qty) * current_price / self.usd_balance
+            current_ratio = current_qty * current_price / self.usd_balance
             if abs(current_ratio - target_ratio) < 0.05:
                 continue
 
