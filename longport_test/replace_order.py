@@ -9,3 +9,16 @@ ctx.replace_order(
     quantity = Decimal(100),
     price = Decimal(50),
 )
+
+history_orders = ctx.history_orders(
+    symbol = 'YANG.US'
+)
+
+today_orders = ctx.today_orders(
+    symbol = 'YANG.US'
+)
+
+stock_postions = ctx.stock_positions(['YANG.US'])
+
+print(history_orders)
+print(today_orders)

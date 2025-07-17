@@ -156,7 +156,9 @@ class LongPortTrader():
             stock_code = position.symbol
             cost_price = float(position.cost_price)
             current_qty = int(position.quantity)
-
+            available_qty = int(position.available_quantity)
+            if available_qty <= 0:
+                continue
             # 获取该股票最新的价格
             cur_quote = self.quote_ctx.quote([stock_code])[0]
             cur_quote_list = [(cur_quote.timestamp, cur_quote.last_done),
@@ -172,30 +174,30 @@ class LongPortTrader():
                 loss = (cost_price - current_price) * current_qty
                 if loss / self.usd_balance > self.loss_threshold:
                     # 止损逻辑
-                    print(f"准备止损 {stock_code}，数量: {-current_qty}，价格: {current_price}")
+                    print(f"准备止损 {stock_code}，数量: {-available_qty}，价格: {current_price}")
                     resp = self.submit_order(
                         symbol=stock_code,
                         order_type=OrderType.LO,
                         side=OrderSide.Sell,
-                        submitted_quantity=Decimal(current_qty),
+                        submitted_quantity=Decimal(available_qty),
                         time_in_force=TimeInForceType.Day,
                         submitted_price=Decimal(current_price),
-                        remark=f"Auto sell {current_qty} shares"
+                        remark=f"Auto sell {available_qty} shares"
                     )
                     print(f"止损订单提交结果: {resp}")
             elif current_price > cost_price:
                 profit = (current_price - cost_price) * current_qty
                 if profit / self.usd_balance > self.profit_threshold:
                     # 止盈逻辑
-                    print(f"准备止盈 {stock_code}，数量: {-current_qty}，价格: {current_price}")
+                    print(f"准备止盈 {stock_code}，数量: {-available_qty}，价格: {current_price}")
                     resp = self.submit_order(
                         symbol=stock_code,
                         order_type=OrderType.LO,
                         side=OrderSide.Sell,
-                        submitted_quantity=Decimal(current_qty),
+                        submitted_quantity=Decimal(available_qty),
                         time_in_force=TimeInForceType.Day,
                         submitted_price=Decimal(current_price),
-                        remark=f"Auto Sell {current_qty} shares"
+                        remark=f"Auto Sell {available_qty} shares"
                     )
                     print(f"止盈订单提交结果: {resp}")
 
@@ -229,11 +231,11 @@ class LongPortTrader():
 
             # 获取该股票的当前持仓
             current_position = next((pos for pos in current_positions if pos.symbol == stock_code), None)
-            current_qty = current_position.quantity if current_position else 0
+            current_qty = int(current_position.available_quantity) if current_position else 0
 
             # 计算目标仓位（这里只是一个示例，实际逻辑可能更复杂）
             target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
-            current_ratio = int(current_qty) * current_price / self.usd_balance
+            current_ratio = current_qty * current_price / self.usd_balance
             if abs(current_ratio - target_ratio) < 0.05:
                 continue
 
