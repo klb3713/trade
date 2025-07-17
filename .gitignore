@@ -144,3 +144,7 @@ cluster.sh
 
 .vscode
 .idea
+.history
+test.ipynb
+nohup.out
+last_known_stock_data.json
