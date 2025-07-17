@@ -20,9 +20,9 @@ POLLING_INTERVAL_SECONDS = int(os.getenv("POLLING_INTERVAL_SECONDS")) # 轮询�
 LOCAL_DATA_FILE = "last_known_stock_data.json" # 存储上次数据的本地文件名
 
 # --- 邮件发送配置 ---
-SENDER_EMAIL = "klb3713@qq.com" # 发件人邮箱，请替换为你的 QQ 邮箱
+SENDER_EMAIL = os.getenv("QQ_EMAIL_SENDER_ACCOUNT") # 发件人邮箱，请替换为你的 QQ 邮箱
 SENDER_PASSWORD = os.getenv("QQ_EMAIL_SENDER_PASSWORD") # 从环境变量中读取授权码
-RECEIVER_EMAIL = "klb3713@qq.com" # 收件人邮箱
+RECEIVER_EMAIL = os.getenv("QQ_EMAIL_RECEIVER_ACCOUNT") # 收件人邮箱
 SMTP_SERVER = "smtp.qq.com"
 SMTP_PORT = 465 # QQ 邮箱 SMTP 服务的 SSL 端口
 
