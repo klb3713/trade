@@ -320,12 +320,19 @@ class LongPortTrader():
 
 # --- 辅助函数 ---
 def load_last_known_data():
-    """从本地文件加载上次已知的数据。"""
+    """从本地文件加载上次已知的数据，并确保数据格式正确。"""
     if os.path.exists(LOCAL_DATA_FILE):
         try:
             with open(LOCAL_DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 从文件 '{LOCAL_DATA_FILE}' 加载上次已知数据。")
+                
+                # 如果数据未经过预处理，则进行预处理
+                if data.get('record_items') and 'stock_code_suffix' not in data['record_items'][0]:
+                    processed_data = update_fetch_data(data)
+                    save_current_data(processed_data)
+                    return processed_data
+                
                 return data
         except json.JSONDecodeError as e:
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 读取本地文件 '{LOCAL_DATA_FILE}' 失败（JSON 解析错误）: {e}")
@@ -346,20 +353,65 @@ def save_current_data(data):
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 保存数据到文件 '{LOCAL_DATA_FILE}' 失败: {e}")
 
 def fetch_current_data():
-    """从 GET 接口获取当前数据。"""
+    """从 GET 接口获取当前数据并进行数据预处理。"""
     try:
         response = requests.get(GET_API_URL, timeout=10) # 设置超时
         response.raise_for_status()  # 检查 HTTP 错误
         data = response.json()
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 成功从云端获取数据。")
-        # 返回 data 字段的完整内容，包含 market_items 和 record_items
-        return data.get('data') 
+        
+        # 数据预处理
+        processed_data = update_fetch_data(data.get('data'))
+        
+        # 返回预处理后的数据
+        return processed_data
     except requests.exceptions.RequestException as e:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 从云端获取数据失败: {e}")
         return None
     except KeyError:
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 云端 JSON 数据结构不符合预期，缺少'data'字段。")
         return None
+
+
+def update_fetch_data(new_full_data):
+    """
+    对获取到的数据进行预处理，包括：
+    1. 添加股票代码后缀（.HK/.US）
+    2. 转换价格单位（除以10^9）
+    3. 计算持仓比例
+    """
+
+    if new_full_data is None:
+        return None
+
+    market_ratio = dict([(item['market'], item['ratio']) for item in new_full_data.get('market_items', [])])
+
+    updated_records = []
+    for item_new in new_full_data.get('record_items', []):
+        item_new['stock_code_suffix'] = '.HK' if item_new.get('market', 0) == 1 else ('.US' if item_new.get('market', 0) == 2 else '')
+        item_new['stock_code'] = item_new.get('stock_code', 'UNKNOWN') + item_new['stock_code_suffix']
+        
+        # 计算当前价格和成本价（单位转换）
+        item_new['current_price'] = round(float(item_new.get('current_price', 0)) / 10**9, 2) if item_new.get('current_price') is not None else 0
+        item_new['cost_price'] = round(float(item_new.get('cost_price', 0)) / 10**9, 2) if item_new.get('cost_price') is not None else 0
+        
+        # 计算持仓比例
+        total_market_ratio = market_ratio.get(item_new.get('market', 0), 1)    # 默认为1，避免除以零
+        item_new['total_ratio'] = round(float(item_new.get('total_ratio', 0)) / total_market_ratio * 100, 2) if total_market_ratio != 0 else 0
+        item_new['position_ratio'] = round(float(item_new.get('position_ratio', 0)) / total_market_ratio * 100,
+                                        2) if total_market_ratio != 0 else 0
+        item_new['profit_and_loss_ratio'] = round(float(item_new.get('profit_and_loss_ratio', 0)) / total_market_ratio * 100,
+                                        2) if total_market_ratio != 0 else 0
+
+        
+        # 添加更新后的数据到列表
+        updated_records.append(item_new)
+
+    updated_data = {
+        'record_items': updated_records
+    }
+    # 返回更新后的数据
+    return updated_data
 
 def get_changes(old_full_data, new_full_data):
     """
@@ -386,11 +438,12 @@ def get_changes(old_full_data, new_full_data):
     for code, old_item in old_dict.items():
         if code in new_dict:
             new_item = new_dict[code]
-            # 比较关键字段，这里简单地比较整个字典的 JSON 字符串
-            # 也可以是比较您关心的特定字段，例如:
-            # if old_item.get('total_ratio') != new_item.get('total_ratio') or \
-            #    old_item.get('position_ratio') != new_item.get('position_ratio'):
-            if json.dumps(old_item, sort_keys=True) != json.dumps(new_item, sort_keys=True):
+            # 比较关键字段：total_ratio、cost_price 和 current_price
+            old_total_ratio = old_item.get('total_ratio', 0)
+            new_total_ratio = new_item.get('total_ratio', 0)
+
+            # 持仓比例超过1%才算变化
+            if abs(old_total_ratio - new_total_ratio) > 1:
                 changes.append((old_item, new_item))
         else:
             # 股票被移除
@@ -436,24 +489,15 @@ def generate_change_data(changed_items, total_market_ratio):
     for item_old, item_new in changed_items:
         stock_name = ""
         stock_code = ""
-        market = 0
-        old_total_ratio = 0
-        new_total_ratio = 0
         display_current_price = 0 # 用于显示的参考成交价
 
         # 获取股票名称和代码
         if item_new:
             stock_name = item_new.get('stock_name', '未知股票')
             stock_code = item_new.get('stock_code', 'UNKNOWN')
-            market = item_new.get('market', 0)
         elif item_old: # 如果是删除的，从旧数据获取名称
             stock_name = item_old.get('stock_name', '未知股票')
             stock_code = item_old.get('stock_code', 'UNKNOWN')
-            market = item_old.get('market', 0)
-
-        stock_code_suffix = '.HK' if market == 1 else ''
-        stock_code_suffix = '.US' if market == 2 else ''
-        stock_code = stock_code + stock_code_suffix
 
         # 获取持仓比例
         old_total_ratio = item_old.get('total_ratio', 0) if item_old else 0
@@ -461,24 +505,19 @@ def generate_change_data(changed_items, total_market_ratio):
         
         # 获取参考成交价
         if item_new and item_new.get('current_price') is not None:
-             display_current_price = item_new.get('current_price') / 10**9
+             display_current_price = item_new.get('current_price')
         elif item_old and item_old.get('current_price') is not None: # 对于删除项，使用旧的 current_price 作为参考
-             display_current_price = item_old.get('current_price') / 10**9
+             display_current_price = item_old.get('current_price')
 
-        # 获取参考成交价
+        # 获取成本价
         if item_new and item_new.get('cost_price') is not None:
-             display_cost_price = item_new.get('cost_price') / 10**9
-        elif item_old and item_old.get('cost_price') is not None: # 对于删除项，使用旧的 current_price 作为参考
-             display_cost_price = item_old.get('cost_price') / 10**9
+             display_cost_price = item_new.get('cost_price')
+        elif item_old and item_old.get('cost_price') is not None: # 对于删除项，使用旧的成本价作为参考
+             display_cost_price = item_old.get('cost_price')
 
-        old_ratio_percent = old_total_ratio / total_market_ratio * 100
-        new_ratio_percent = new_total_ratio / total_market_ratio * 100
 
-        if abs(new_ratio_percent - old_ratio_percent) < 1:
-            continue
-
-        old_ratio_str = f"{old_ratio_percent:.2f}%"
-        new_ratio_str = f"{new_ratio_percent:.2f}%"
+        old_ratio_str = f"{old_total_ratio:.2f}%"
+        new_ratio_str = f"{new_total_ratio:.2f}%"
 
         # 根据变动类型生成不同的显示
         change_text = ""
@@ -505,10 +544,10 @@ def generate_change_data(changed_items, total_market_ratio):
         change_entry = {
             "stock_code": stock_code,
             "stock_name": stock_name,
-            "old_ratio_percent": round(old_ratio_percent, 2),
-            "new_ratio_percent": round(new_ratio_percent, 2),
-            "current_price": round(display_current_price, 2),
-            "cost_price": round(display_cost_price, 2),
+            "old_ratio_percent": old_total_ratio,
+            "new_ratio_percent": new_total_ratio,
+            "current_price": display_current_price,
+            "cost_price": display_cost_price,
             "change_type": change_type
         }
         changes.append(change_entry)
