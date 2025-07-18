@@ -19,6 +19,11 @@ GET_API_URL = os.getenv("FUTU_POSITION_URL")  # 请替换为您的实际 GET 接
 POLLING_INTERVAL_SECONDS = int(os.getenv("POLLING_INTERVAL_SECONDS")) # 轮询间隔（秒）
 LOCAL_DATA_FILE = "last_known_stock_data.json" # 存储上次数据的本地文件名
 
+# 新增配置
+PORTFOLIO_ID_NAMES = dict([item.split('|', 1) for item in os.getenv("PORTFOLIO_ID_NAMES", "").split(',')])
+PORTFOLIO_ID_BANLANCES= dict([item.split('|', 1) for item in os.getenv("PORTFOLIO_ID_BANLANCES", "").split(',')])
+PORTFOLIO_DATA_FILES = {pid: f"last_known_stock_data_{pid}.json" for pid in PORTFOLIO_ID_NAMES}
+
 # --- 邮件发送配置 ---
 SENDER_EMAIL = os.getenv("QQ_EMAIL_SENDER_ACCOUNT") # 发件人邮箱，请替换为你的 QQ 邮箱
 SENDER_PASSWORD = os.getenv("QQ_EMAIL_SENDER_PASSWORD") # 从环境变量中读取授权码
@@ -34,7 +39,14 @@ class LongPortTrader():
         self.config = Config.from_env()
         self.ctx = TradeContext(self.config)
         self.quote_ctx = QuoteContext(self.config)
-        self.usd_balance = float(os.getenv("USD_BANLANCE", "10000.00"))
+        self.usd_balance = float(os.getenv("TOTAL_BANLANCE", "100000.00"))
+        self.pid_balance = {}
+        if PORTFOLIO_ID_BANLANCES:
+            for pid in PORTFOLIO_ID_NAMES:
+                self.pid_balance[pid] = float(PORTFOLIO_ID_BANLANCES.get(pid, '10000.0'))
+        else:
+            for pid in PORTFOLIO_ID_NAMES:
+                self.pid_balance[pid] = self.usd_balance / len(PORTFOLIO_ID_NAMES)
         self.loss_threshold = float(os.getenv("LOSS_THRESHOLD", "0.01"))
         self.profit_threshold = float(os.getenv("PROFIT_THRESHOLD", "0.04"))
 
@@ -208,7 +220,12 @@ class LongPortTrader():
         参数:
             json_output (dict): generate_change_data 返回的结构化数据
         """
-
+        portfolio_id = json_output.get("portfolio_id", None)
+        if portfolio_id is None:
+            return
+        pid_balance = self.pid_balance.get(portfolio_id, None)
+        if pid_balance is None:
+            return
         # 获取当前所有持仓
         current_positions = []
         resp = self.ctx.stock_positions()
@@ -235,12 +252,12 @@ class LongPortTrader():
 
             # 计算目标仓位（这里只是一个示例，实际逻辑可能更复杂）
             target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
-            current_ratio = current_qty * current_price / self.usd_balance
+            current_ratio = current_qty * current_price / pid_balance
             if abs(current_ratio - target_ratio) < 0.05:
                 continue
 
             # 假设总市值资金为账户余额的一定比例（这只是一个简单示例）
-            target_qty = int(self.usd_balance * target_ratio / current_price) if current_price > 0 else 0
+            target_qty = int(pid_balance * target_ratio / current_price) if current_price > 0 else 0
 
             # 计算需要买入或卖出的数量
             qty_diff = target_qty - current_qty
@@ -319,46 +336,77 @@ class LongPortTrader():
 
 
 # --- 辅助函数 ---
-def load_last_known_data():
-    """从本地文件加载上次已知的数据，并确保数据格式正确。"""
-    if os.path.exists(LOCAL_DATA_FILE):
+def load_last_known_data(portfolio_id):
+    """从本地文件加载上次已知的数据，并确保数据格式正确。
+    
+    参数:
+        portfolio_id (str): 组合ID，用于定位对应的本地文件
+    返回:
+        dict: 加载的数据，格式与 fetch_current_data 相同
+    """
+    local_data_file = PORTFOLIO_DATA_FILES.get(portfolio_id, f"last_known_stock_data_{portfolio_id}.json")
+    
+    if os.path.exists(local_data_file):
         try:
-            with open(LOCAL_DATA_FILE, 'r', encoding='utf-8') as f:
+            with open(local_data_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 从文件 '{LOCAL_DATA_FILE}' 加载上次已知数据。")
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 从文件 '{local_data_file}' 加载上次已知数据（组合: {portfolio_id}） 。")
                 
                 # 如果数据未经过预处理，则进行预处理
                 if data.get('record_items') and 'stock_code_suffix' not in data['record_items'][0]:
                     processed_data = update_fetch_data(data)
-                    save_current_data(processed_data)
+                    save_current_data(processed_data, portfolio_id)
                     return processed_data
                 
                 return data
         except json.JSONDecodeError as e:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 读取本地文件 '{LOCAL_DATA_FILE}' 失败（JSON 解析错误）: {e}")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 读取本地文件 '{local_data_file}' 失败（JSON 解析错误）（组合ID: {portfolio_id}）: {e}")
             return None
         except Exception as e:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 读取本地文件 '{LOCAL_DATA_FILE}' 失败: {e}")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 读取本地文件 '{local_data_file}' 失败（组合ID: {portfolio_id}）: {e}")
             return None
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 本地文件 '{LOCAL_DATA_FILE}' 不存在，将首次从云端获取数据。")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 本地文件 '{local_data_file}' 不存在（组合ID: {portfolio_id}），将首次从云端获取数据。")
     return None
 
-def save_current_data(data):
-    """将当前数据保存到本地文件。"""
-    try:
-        with open(LOCAL_DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 数据已保存到文件 '{LOCAL_DATA_FILE}'。")
-    except Exception as e:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 保存数据到文件 '{LOCAL_DATA_FILE}' 失败: {e}")
+def save_current_data(data, portfolio_id):
+    """将当前数据保存到本地文件。
+    
+    参数:
+        data (dict): 要保存的数据
+        portfolio_id (str): 组合ID，用于定位对应的本地文件
+    """
+    local_data_file = PORTFOLIO_DATA_FILES.get(portfolio_id, f"last_known_stock_data_{portfolio_id}.json")
 
-def fetch_current_data():
-    """从 GET 接口获取当前数据并进行数据预处理。"""
     try:
-        response = requests.get(GET_API_URL, timeout=10) # 设置超时
+        with open(local_data_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 数据已保存到文件 '{local_data_file}'（组合ID: {portfolio_id}）。")
+    except Exception as e:
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 保存数据到文件 '{local_data_file}' 失败（组合ID: {portfolio_id}）: {e}")
+
+def fetch_current_data(portfolio_id):
+    """从 GET 接口获取当前数据并进行数据预处理，并根据组合ID过滤数据。
+    
+    参数:
+        portfolio_id (str): 组合ID，用于过滤数据
+    返回:
+        dict: 预处理后的数据，包含该组合的持仓信息
+    """
+    try:
+        # 构建带 portfolio_id 参数的 URL
+        params = {
+            "portfolio_id": portfolio_id,
+            "language": '0'
+        }
+        response = requests.get(GET_API_URL, params=params, timeout=10) # 设置超时
         response.raise_for_status()  # 检查 HTTP 错误
         data = response.json()
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 成功从云端获取数据。")
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 成功从云端获取数据（组合ID: {portfolio_id}）。")
+        
+        # 确保返回的数据结构正确
+        if 'data' not in data:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 云端 JSON 数据结构不符合预期，缺少'data'字段（组合ID: {portfolio_id}）。")
+            return None
         
         # 数据预处理
         processed_data = update_fetch_data(data.get('data'))
@@ -366,10 +414,10 @@ def fetch_current_data():
         # 返回预处理后的数据
         return processed_data
     except requests.exceptions.RequestException as e:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 从云端获取数据失败: {e}")
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 从云端获取数据失败（组合ID: {portfolio_id}）: {e}")
         return None
     except KeyError:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 云端 JSON 数据结构不符合预期，缺少'data'字段。")
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 云端 JSON 数据结构不符合预期，缺少'data'字段（组合ID: {portfolio_id}）。")
         return None
 
 
@@ -417,18 +465,14 @@ def get_changes(old_full_data, new_full_data):
     """
     识别 record_items 之间的变化。
     参数:
-        old_full_data (dict): 上一次获取的完整数据 (包含 record_items 和 market_items)
-        new_full_data (dict): 本次获取的完整数据 (包含 record_items 和 market_items)
+        old_full_data (dict): 上一次获取的完整数据 (包含 record_items)
+        new_full_data (dict): 本次获取的完整数据 (包含 record_items)
     返回:
-        tuple: (changed_items_list, current_market_ratio)
-               changed_items_list: 包含 (old_item, new_item) 对的列表，表示发生变化的股票。
-                                   如果某个股票是新增的，old_item 为 None；如果是删除的，new_item 为 None。
-               current_market_ratio: 当前美股的总市值比例，用于后续计算持仓比例。
+        changed_items_list: 包含 (old_item, new_item) 对的列表，表示发生变化的股票。
+                            如果某个股票是新增的，old_item 为 None；如果是删除的，new_item 为 None。
     """
     old_records = old_full_data.get('record_items', []) if old_full_data else []
     new_records = new_full_data.get('record_items', []) if new_full_data else []
-    
-    current_market_ratio = new_full_data.get('market_items', [{}])[0].get('ratio') if new_full_data.get('market_items') else 1 # 默认为1，避免除以零
 
     changes = []
     old_dict = {item['stock_code']: item for item in old_records}
@@ -454,7 +498,7 @@ def get_changes(old_full_data, new_full_data):
         if code not in old_dict:
             changes.append((None, new_item))
             
-    return changes, current_market_ratio
+    return changes
 
 def send_email(subject, html_content):
     """
@@ -475,21 +519,18 @@ def send_email(subject, html_content):
         pass
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 邮件已成功发送到 {RECEIVER_EMAIL}。")
 
-def generate_change_data(changed_items, total_market_ratio):
+def generate_change_data(changed_items, portfolio_id):
     current_time = datetime.now().strftime('%Y/%m/%d %H:%M:%S')
 
     changes = []
     """生成每个股票变化的 HTML 片段"""
     sections_html = []
-    
-    # 确保 total_market_ratio 是一个有效数字，避免除零错误
-    if not isinstance(total_market_ratio, (int, float)) or total_market_ratio == 0:
-        total_market_ratio = 1 # 作为备用值，避免计算错误
 
     for item_old, item_new in changed_items:
         stock_name = ""
         stock_code = ""
         display_current_price = 0 # 用于显示的参考成交价
+        display_cost_price = 0 # 用于显示的成本价
 
         # 获取股票名称和代码
         if item_new:
@@ -554,12 +595,12 @@ def generate_change_data(changed_items, total_market_ratio):
 
     if not changes:
         return None, ""
-
+    portfolio_name = PORTFOLIO_ID_NAMES.get(portfolio_id, "未知实盘")
     # 根据变化的数据和总市值比例创建类似图片样式的 HTML 卡片内容。
     sections_html_str = "\n".join(sections_html)
     html_template = f"""
     <div style="font-family: Arial, sans-serif; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; max-width: 600px; margin: 20px auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-        <div style="font-size: 18px; font-weight: bold; color: #333; margin-bottom: 15px;">调仓历史 - {current_time}</div>
+        <div style="font-size: 18px; font-weight: bold; color: #333; margin-bottom: 15px;">{portfolio_name} 调仓历史 - {current_time}</div>
         <hr style="border: none; border-top: 1px solid #eee; margin-bottom: 15px;">
         {sections_html_str}
         <div style="font-size: 12px; color: #888; margin-top: 20px;">
@@ -570,7 +611,8 @@ def generate_change_data(changed_items, total_market_ratio):
 
     json_output = {
         "timestamp": current_time,
-        "total_market_ratio": total_market_ratio,
+        "portfolio_id": portfolio_id,
+        "portfolio_name": portfolio_name,
         "changes": changes
     }
 
@@ -578,33 +620,44 @@ def generate_change_data(changed_items, total_market_ratio):
 
 
 # --- 交易接口调用逻辑（修改为生成邮件并发送）---
-def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_email=False):
+def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_email=False, portfolio_id=""):
     """
     根据数据变化生成邮件卡片并发送。
+    
+    参数:
+        old_full_data (dict): 上一次获取的完整数据
+        new_full_data (dict): 本次获取的完整数据
+        longport_trader (LongPortTrader): 交易接口实例
+        with_email (bool): 是否发送邮件
+        portfolio_id (str): 组合ID，用于日志和文件管理
+        portfolio_name (str): 组合名称，用于邮件显示
+    返回:
+        bool: 是否有变化
     """
+    portfolio_name = PORTFOLIO_ID_NAMES.get(portfolio_id, "未知实盘")
     has_changes = False
     # 获取变化列表和当前总市值比例
-    changed_items, total_market_ratio = get_changes(old_full_data, new_full_data)
-
+    changed_items = get_changes(old_full_data, new_full_data)
     # 只有当确实有股票发生变化时才发送邮件
     if changed_items:
         # 生成 HTML 邮件内容 和 JSON 内容
-        json_content, html_content = generate_change_data(changed_items, total_market_ratio)
+        json_content, html_content = generate_change_data(changed_items, portfolio_id)
         if json_content:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 检测到股票持仓数据变化！")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 检测到股票持仓数据变化（组合ID: {portfolio_id}）！")
             print(json.dumps(json_content, indent=4, ensure_ascii=False))
+            # 仅当配置了实盘交易，才进行实盘交易
             if longport_trader:
                 longport_trader.track_and_trade(json_content)
             if with_email:
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备生成邮件卡片并发送...")
-                subject = f"股票持仓变动通知 - {datetime.now().strftime('%Y/%m/%d %H:%M')}"
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备生成邮件卡片并发送（组合ID: {portfolio_id}）...")
+                subject = f"【{portfolio_name}】股票持仓变动通知 - {datetime.now().strftime('%Y/%m/%d %H:%M')}"
                 # 发送邮件
                 send_email(subject, html_content)
             has_changes = True
         else:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓数据无变化。")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓数据无变化（组合ID: {portfolio_id}）。")
     else:
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 尽管数据整体结构有变动，但record_items内容无实质变化，不发送邮件。")
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓数据无变化（组合ID: {portfolio_id}）。")
     return has_changes
 
 
@@ -612,42 +665,39 @@ def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_emai
 def main():
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓监测程序启动...", flush=True)
 
-    last_known_full_data = load_last_known_data()
-    longport_trader = LongPortTrader()
+    # 为每个组合创建独立的数据存储
+    last_known_datas = {}
+    for pid, pname in PORTFOLIO_ID_NAMES.items():
+        last_known_datas[pid] = load_last_known_data(pid)
 
+    #初始化实盘示例
+    longport_trader = LongPortTrader()
     while True:
         longport_trader.check_and_trade()
-        current_full_data = fetch_current_data() # 获取完整的 data 字段内容
+        # 对每个组合执行检查和交易
+        for pid, pname in PORTFOLIO_ID_NAMES.items():
+            # 获取当前组合的数据
+            current_full_data = fetch_current_data(pid)
+            if current_full_data is None:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 本次获取云端数据失败（组合ID: {pid}），等待下次轮询。")
+                continue
+
+            # 获取上一次的数据
+            last_known_full_data = last_known_datas.get(pid, None)
+            if last_known_full_data is None:
+                # 如果上次数据为空（例如首次运行或文件不存在/损坏），则直接将当前数据保存为基准
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 上次数据为空（组合ID: {pid}），已将本次成功获取的云端数据保存为基准。")
+                save_current_data(current_full_data, pid)
+                last_known_datas[pid] = current_full_data
+                continue
+
+            # 比较数据是否有变化
+            has_changes = call_trade_api(last_known_full_data, current_full_data, longport_trader, True, pid)
+            if has_changes:
+                save_current_data(current_full_data, pid)
+                last_known_datas[pid] = current_full_data
+        # 等待下一轮询
         interval_seconds = POLLING_INTERVAL_SECONDS if longport_trader.check_trading_hours() else 3600
-        if current_full_data is None:
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 本次获取云端数据失败，等待下次轮询。")
-            time.sleep(interval_seconds)
-            continue
-
-        # 确保 record_items 存在，否则无法比较
-        current_record_items = current_full_data.get('record_items', [])
-        last_record_items = last_known_full_data.get('record_items', []) if last_known_full_data else []
-
-        if last_known_full_data is not None:
-            # 比较 record_items 是否有变化
-            # 这里需要一个更精确的比较，因为即使 record_items 不变，total_market_ratio 也可能变
-            # 我们只在 record_items 变化时发送邮件
-            
-            # 使用 json.dumps 比较 record_items 的内容来判断是否真的有“股票”变化
-            if json.dumps(last_record_items, sort_keys=True) != json.dumps(current_record_items, sort_keys=True):
-                has_changes = call_trade_api(last_known_full_data, current_full_data, longport_trader, True) # 传入完整的旧数据和新数据
-                if has_changes:
-                    save_current_data(current_full_data)
-                last_known_full_data = current_full_data
-            else:
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓数据无变化。")
-                # 即使 record_items 无变化，market_items 可能会变，但我们只在股票变化时通知
-        else:
-            # 如果上次数据为空（例如首次运行或文件不存在/损坏），则直接将当前数据保存为基准
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 上次数据为空，已将本次成功获取的云端数据保存为基准。")
-            save_current_data(current_full_data)
-            last_known_full_data = current_full_data
-
         time.sleep(interval_seconds)
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 新一轮查询开始...", flush=True)
 
