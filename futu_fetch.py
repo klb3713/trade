@@ -22,6 +22,13 @@ LOCAL_DATA_FILE = "last_known_stock_data.json" # 存储上次数据的本地文�
 # 新增配置
 PORTFOLIO_ID_NAMES = dict([item.split('|', 1) for item in os.getenv("PORTFOLIO_ID_NAMES", "").split(',')])
 PORTFOLIO_ID_BANLANCES= dict([item.split('|', 1) for item in os.getenv("PORTFOLIO_ID_BANLANCES", "").split(',')])
+TOTAL_BANLANCE = float(os.getenv("TOTAL_BANLANCE", "100000.00"))
+if PORTFOLIO_ID_BANLANCES:
+    for pid in PORTFOLIO_ID_NAMES:
+        PORTFOLIO_ID_BANLANCES[pid] = float(PORTFOLIO_ID_BANLANCES.get(pid, '10000.0'))
+else:
+    for pid in PORTFOLIO_ID_NAMES:
+        PORTFOLIO_ID_BANLANCES[pid] = TOTAL_BANLANCE / len(PORTFOLIO_ID_NAMES)
 PORTFOLIO_DATA_FILES = {pid: f"last_known_stock_data_{pid}.json" for pid in PORTFOLIO_ID_NAMES}
 
 # --- 邮件发送配置 ---
@@ -39,14 +46,8 @@ class LongPortTrader():
         self.config = Config.from_env()
         self.ctx = TradeContext(self.config)
         self.quote_ctx = QuoteContext(self.config)
-        self.usd_balance = float(os.getenv("TOTAL_BANLANCE", "100000.00"))
-        self.pid_balance = {}
-        if PORTFOLIO_ID_BANLANCES:
-            for pid in PORTFOLIO_ID_NAMES:
-                self.pid_balance[pid] = float(PORTFOLIO_ID_BANLANCES.get(pid, '10000.0'))
-        else:
-            for pid in PORTFOLIO_ID_NAMES:
-                self.pid_balance[pid] = self.usd_balance / len(PORTFOLIO_ID_NAMES)
+        self.usd_balance = TOTAL_BANLANCE
+        self.pid_balance = PORTFOLIO_ID_BANLANCES
         self.loss_threshold = float(os.getenv("LOSS_THRESHOLD", "0.01"))
         self.profit_threshold = float(os.getenv("PROFIT_THRESHOLD", "0.04"))
 
@@ -62,6 +63,10 @@ class LongPortTrader():
         hk = pytz.timezone('Asia/Hong_Kong')
         now = datetime.now(eastern) if market == "US" else datetime.now(hk)
         now_time = now.strftime("%H:%M")
+
+        # 判断是否为周六或周日（weekday() 返回 5 表示周六，6 表示周日）
+        if now.weekday() in [5, 6]:
+            return False
 
         if trading_hours[market]["start"] <= now_time <= trading_hours[market]["end"]:
             return True
@@ -152,66 +157,68 @@ class LongPortTrader():
             pass
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 错误通知邮件已发送到 {RECEIVER_EMAIL}。")
 
-    def check_and_trade(self):
+    def check_and_trade(self, last_known_datas):
         """
         根据持仓情况止盈止损
         """
+        for pid, position_data in last_known_datas.items():
+            portfolio_banlance = position_data['portfolio_banlance']
+            stock_codes = [record["stock_code"] for record in position_data.get("record_items", [])]
+            # 获取当前所有持仓
+            current_positions = []
+            resp = self.ctx.stock_positions(stock_codes)
+            if resp.channels:
+                current_positions = resp.channels[0].positions
 
-        # 获取当前所有持仓
-        current_positions = []
-        resp = self.ctx.stock_positions()
-        if resp.channels:
-            current_positions = resp.channels[0].positions
+            # 处理每个持仓
+            for position in current_positions:
+                stock_code = position.symbol
+                cost_price = float(position.cost_price)
+                current_qty = int(position.quantity)
+                available_qty = int(position.available_quantity)
+                if available_qty <= 0:
+                    continue
+                # 获取该股票最新的价格
+                cur_quote = self.quote_ctx.quote([stock_code])[0]
+                cur_quote_list = [(cur_quote.timestamp, cur_quote.last_done),
+                                  (cur_quote.pre_market_quote.timestamp, cur_quote.pre_market_quote.last_done),
+                                  (cur_quote.post_market_quote.timestamp, cur_quote.post_market_quote.last_done)]
+                cur_quote_list.sort(key=lambda x: x[0], reverse=True)
+                current_price = round(float(cur_quote_list[0][1]), 2)
 
-        # 处理每个持仓
-        for position in current_positions:
-            stock_code = position.symbol
-            cost_price = float(position.cost_price)
-            current_qty = int(position.quantity)
-            available_qty = int(position.available_quantity)
-            if available_qty <= 0:
-                continue
-            # 获取该股票最新的价格
-            cur_quote = self.quote_ctx.quote([stock_code])[0]
-            cur_quote_list = [(cur_quote.timestamp, cur_quote.last_done),
-                              (cur_quote.pre_market_quote.timestamp, cur_quote.pre_market_quote.last_done),
-                              (cur_quote.post_market_quote.timestamp, cur_quote.post_market_quote.last_done)]
-            cur_quote_list.sort(key=lambda x: x[0], reverse=True)
-            current_price = round(float(cur_quote_list[0][1]), 2)
+                if not (current_price > 0 and cost_price > 0):
+                    continue
 
-            if not (current_price > 0 and cost_price > 0):
-                continue
-
-            if current_price < cost_price:
-                loss = (cost_price - current_price) * current_qty
-                if loss / self.usd_balance > self.loss_threshold:
-                    # 止损逻辑
-                    print(f"准备止损 {stock_code}，数量: {-available_qty}，价格: {current_price}")
-                    resp = self.submit_order(
-                        symbol=stock_code,
-                        order_type=OrderType.LO,
-                        side=OrderSide.Sell,
-                        submitted_quantity=Decimal(available_qty),
-                        time_in_force=TimeInForceType.Day,
-                        submitted_price=Decimal(current_price),
-                        remark=f"Auto sell {available_qty} shares"
-                    )
-                    print(f"止损订单提交结果: {resp}")
-            elif current_price > cost_price:
-                profit = (current_price - cost_price) * current_qty
-                if profit / self.usd_balance > self.profit_threshold:
-                    # 止盈逻辑
-                    print(f"准备止盈 {stock_code}，数量: {-available_qty}，价格: {current_price}")
-                    resp = self.submit_order(
-                        symbol=stock_code,
-                        order_type=OrderType.LO,
-                        side=OrderSide.Sell,
-                        submitted_quantity=Decimal(available_qty),
-                        time_in_force=TimeInForceType.Day,
-                        submitted_price=Decimal(current_price),
-                        remark=f"Auto Sell {available_qty} shares"
-                    )
-                    print(f"止盈订单提交结果: {resp}")
+                if current_price < cost_price:
+                    loss = (cost_price - current_price) * current_qty
+                    if loss / portfolio_banlance > self.loss_threshold:
+                        # 止损逻辑
+                        print(f"准备止损 {stock_code}，数量: {-available_qty}，价格: {current_price}")
+                        resp = self.submit_order(
+                            symbol=stock_code,
+                            order_type=OrderType.LO,
+                            side=OrderSide.Sell,
+                            submitted_quantity=Decimal(available_qty),
+                            time_in_force=TimeInForceType.Day,
+                            submitted_price=Decimal(current_price),
+                            remark=f"Auto sell {available_qty} shares"
+                        )
+                        print(f"止损订单提交结果: {resp}")
+                elif current_price > cost_price:
+                    profit = (current_price - cost_price) * current_qty
+                    if profit / portfolio_banlance > self.profit_threshold:
+                        # 止盈逻辑
+                        print(f"准备止盈 {stock_code}，数量: {-available_qty}，价格: {current_price}")
+                        resp = self.submit_order(
+                            symbol=stock_code,
+                            order_type=OrderType.LO,
+                            side=OrderSide.Sell,
+                            submitted_quantity=Decimal(available_qty),
+                            time_in_force=TimeInForceType.Day,
+                            submitted_price=Decimal(current_price),
+                            remark=f"Auto Sell {available_qty} shares"
+                        )
+                        print(f"止盈订单提交结果: {resp}")
 
     def track_and_trade(self, json_output):
         """
@@ -376,7 +383,11 @@ def save_current_data(data, portfolio_id):
         portfolio_id (str): 组合ID，用于定位对应的本地文件
     """
     local_data_file = PORTFOLIO_DATA_FILES.get(portfolio_id, f"last_known_stock_data_{portfolio_id}.json")
-
+    portfolio_name = PORTFOLIO_ID_NAMES.get(portfolio_id, "未知实盘")
+    portfolio_banlance = PORTFOLIO_ID_BANLANCES.get(portfolio_id, 10000.0)
+    data['portfolio_name'] = portfolio_name
+    data['portfolio_id'] = portfolio_id
+    data['portfolio_banlance'] = portfolio_banlance
     try:
         with open(local_data_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
@@ -665,6 +676,11 @@ def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_emai
 def main():
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 股票持仓监测程序启动...", flush=True)
 
+    print(PORTFOLIO_ID_NAMES)
+    print(PORTFOLIO_ID_BANLANCES)
+    print(PORTFOLIO_DATA_FILES)
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 以上是当前跟踪的实盘详情", flush=True)
+
     # 为每个组合创建独立的数据存储
     last_known_datas = {}
     for pid, pname in PORTFOLIO_ID_NAMES.items():
@@ -673,7 +689,7 @@ def main():
     #初始化实盘示例
     longport_trader = LongPortTrader()
     while True:
-        longport_trader.check_and_trade()
+        longport_trader.check_and_trade(last_known_datas)
         # 对每个组合执行检查和交易
         for pid, pname in PORTFOLIO_ID_NAMES.items():
             # 获取当前组合的数据
