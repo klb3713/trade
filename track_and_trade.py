@@ -106,7 +106,7 @@ class FutuTrader:
             if position_data is None:
                 continue
             portfolio_banlance = position_data['portfolio_banlance']
-            stock_codes = [f"{record["stock_code_suffix"]}.{record["stock_code"]}" for record in position_data.get("record_items", [])]
+            stock_codes = [f"{record['stock_code_suffix']}.{record['stock_code']}" for record in position_data.get("record_items", [])]
             track_stock_codes.extend(stock_codes)
         track_stock_codes = list(set(track_stock_codes))
 
@@ -392,7 +392,7 @@ class LongPortTrader():
             if position_data is None:
                 continue
             portfolio_banlance = position_data['portfolio_banlance']
-            stock_codes = [f"{record["stock_code"]}.{record["stock_code_suffix"]}" for record in position_data.get("record_items", [])]
+            stock_codes = [f"{record['stock_code']}.{record['stock_code_suffix']}" for record in position_data.get("record_items", [])]
             # 获取当前所有持仓
             current_positions = []
             resp = self.ctx.stock_positions(stock_codes)
