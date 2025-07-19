@@ -1,6 +1,18 @@
 from futu import *
-quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
 
+trd_ctx = OpenSecTradeContext(filter_trdmarket=TrdMarket.HK, host='127.0.0.1', port=11111, security_firm=SecurityFirm.FUTUSECURITIES)
+ret, data = trd_ctx.get_acc_list()
+if ret == RET_OK:
+    print(data)
+    print(data['acc_id'][0])  # 取第一个账号
+    print(data['acc_id'].values.tolist())  # 转为 list
+else:
+    print('get_acc_list error: ', data)
+trd_ctx.close()
+
+exit(0)
+
+quote_ctx = OpenQuoteContext(host='127.0.0.1', port=11111)
 ret_sub, err_message = quote_ctx.subscribe(['US.AAPL'], [SubType.QUOTE], subscribe_push=False)
 # 先订阅 K 线类型。订阅成功后 OpenD 将持续收到服务器的推送，False 代表暂时不需要推送给脚本
 if ret_sub == RET_OK:  # 订阅成功

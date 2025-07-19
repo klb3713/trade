@@ -122,6 +122,7 @@ class FutuTrader:
             can_sell_qty = int(pos['can_sell_qty'])
             pl_val = float(pos['pl_val'])
             pl_ratio = float(pos['pl_ratio'])
+            nominal_price = round(float(pos['nominal_price']), 2)
 
             if stock_code not in track_stock_codes:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 跳过非跟踪股票: {stock_code}")
@@ -130,11 +131,13 @@ class FutuTrader:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 跳过持仓为 0 的股票: {stock_code}")
                 continue
 
+            # futu 行情要开月卡 60 美元，这里默认使用跟踪到的股价
             ret, quote = self.quote_ctx.get_market_snapshot([stock_code])
             if ret != RET_OK:
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 获取行情失败: {stock_code}")
-                continue
-            current_price = round(float(quote['last_price'][0]), 2)
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 获取行情失败: {stock_code}，使用持仓的行情报价")
+                current_price = nominal_price
+            else:
+                current_price = round(float(quote['last_price'][0]), 2)
 
             if pl_ratio < 0 and pl_ratio < self.stop_loss_ratio:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备止损 {stock_code}，数量: {can_sell_qty}，价格: {current_price}")
@@ -179,12 +182,14 @@ class FutuTrader:
             stock_code_suffix = change["stock_code_suffix"]
             stock_code = f"{stock_code_suffix}.{stock_code}"
             change_type = change["change_type"]
+            current_price = change["current_price"]
 
+            # futu 行情要开月卡 60 美元，这里默认使用跟踪到的股价
             ret, quote = self.quote_ctx.get_market_snapshot([stock_code])
             if ret != RET_OK:
-                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 获取行情失败: {stock_code}")
-                continue
-            current_price = round(float(quote['last_price'][0]), 2)
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 获取行情失败: {stock_code}，使用跟踪的行情报价")
+            else:
+                current_price = round(float(quote['last_price'][0]), 2)
 
             current_position = positions_dict.get(stock_code, {})
             current_qty = int(current_position.get('qty', 0))
@@ -791,35 +796,22 @@ def generate_change_data(changed_items, portfolio_id):
     sections_html = []
 
     for item_old, item_new in changed_items:
-        stock_name = ""
-        stock_code = ""
-        display_current_price = 0 # 用于显示的参考成交价
-        display_cost_price = 0 # 用于显示的成本价
-
+        if not item_old and not item_new:
+            continue
+        change_item = item_new if item_new else item_old
         # 获取股票名称和代码
-        if item_new:
-            stock_name = item_new.get('stock_name', '未知股票')
-            stock_code = item_new.get('stock_code', 'UNKNOWN')
-        elif item_old: # 如果是删除的，从旧数据获取名称
-            stock_name = item_old.get('stock_name', '未知股票')
-            stock_code = item_old.get('stock_code', 'UNKNOWN')
+        stock_name = change_item.get('stock_name', '未知股票')
+        stock_code = change_item.get('stock_code', 'UNKNOWN')
+        stock_code_suffix = change_item.get('stock_code_suffix', '')
 
         # 获取持仓比例
         old_total_ratio = item_old.get('total_ratio', 0) if item_old else 0
         new_total_ratio = item_new.get('total_ratio', 0) if item_new else 0
-        
+
         # 获取参考成交价
-        if item_new and item_new.get('current_price') is not None:
-             display_current_price = item_new.get('current_price')
-        elif item_old and item_old.get('current_price') is not None: # 对于删除项，使用旧的 current_price 作为参考
-             display_current_price = item_old.get('current_price')
-
+        display_current_price = change_item.get('current_price', 0)
         # 获取成本价
-        if item_new and item_new.get('cost_price') is not None:
-             display_cost_price = item_new.get('cost_price')
-        elif item_old and item_old.get('cost_price') is not None: # 对于删除项，使用旧的成本价作为参考
-             display_cost_price = item_old.get('cost_price')
-
+        display_cost_price = change_item.get('cost_price', 0)
 
         old_ratio_str = f"{old_total_ratio:.2f}%"
         new_ratio_str = f"{new_total_ratio:.2f}%"
@@ -848,6 +840,7 @@ def generate_change_data(changed_items, portfolio_id):
 
         change_entry = {
             "stock_code": stock_code,
+            "stock_code_suffix": stock_code_suffix,
             "stock_name": stock_name,
             "old_ratio_percent": old_total_ratio,
             "new_ratio_percent": new_total_ratio,
