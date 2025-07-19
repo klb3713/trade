@@ -11,13 +11,15 @@ from datetime import datetime
 from dotenv import load_dotenv
 from longport.openapi import QuoteContext, TradeContext, Config, OrderSide, OrderType, TimeInForceType
 
+from futu import OpenSecTradeContext, OpenQuoteContext, TrdEnv, RET_OK, TrdMarket, TrdSide
+from futu import OrderType as FutuOrderType
+
 # 加载环境变量
 load_dotenv()  # 从 .env 文件加载环境变量
 
 # --- 配置参数 ---
 GET_API_URL = os.getenv("FUTU_POSITION_URL")  # 请替换为您的实际 GET 接口 URL
 POLLING_INTERVAL_SECONDS = int(os.getenv("POLLING_INTERVAL_SECONDS")) # 轮询间隔（秒）
-LOCAL_DATA_FILE = "last_known_stock_data.json" # 存储上次数据的本地文件名
 
 # 新增配置
 PORTFOLIO_ID_NAMES = dict([item.split('|', 1) for item in os.getenv("PORTFOLIO_ID_NAMES", "").split(',')])
@@ -39,6 +41,252 @@ SMTP_SERVER = "smtp.qq.com"
 SMTP_PORT = 465 # QQ 邮箱 SMTP 服务的 SSL 端口
 
 
+class FutuTrader:
+    def __init__(self, **kwargs):
+        self.host = os.getenv("FUTU_OPEND_HOST", "127.0.0.1")
+        self.port = int(os.getenv("FUTU_OPEND_PORT", "11111"))
+        self.password = os.getenv("FUTU_PASSWORD")
+        self.trd_env = TrdEnv.SIMULATE if os.getenv("FUTU_TRD_ENV", "SIMULATE") == "SIMULATE" else TrdEnv.REAL
+        self.acc_index = int(os.getenv("FUTU_ACC_INDEX", "0"))
+        self.trd_ctx = OpenSecTradeContext(host=self.host, port=self.port, filter_trdmarket=TrdMarket.US)
+        self.quote_ctx = OpenQuoteContext(host=self.host, port=self.port)
+        self.usd_balance = TOTAL_BANLANCE
+        self.pid_balance = PORTFOLIO_ID_BANLANCES
+        # self.loss_threshold = float(os.getenv("LOSS_THRESHOLD", "0.01"))
+        # self.profit_threshold = float(os.getenv("PROFIT_THRESHOLD", "0.04"))
+        self.stop_loss_ratio = float(os.getenv("STOP_LOSS_RATIO", "10.0"))
+        self.stop_profit_ratio = float(os.getenv("STOP_PROFIT_RATIO", "20.0"))
+        if self.trd_env == TrdEnv.REAL:
+            if not self.password:
+                raise Exception("实盘交易需要设置 FUTU_PASSWORD")
+            ret, data = self.trd_ctx.unlock_trade(self.password)
+            if ret != RET_OK:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 解锁交易失败: {data}")
+                raise Exception("交易解锁失败")
+            else:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 解锁实盘交易成功")
+
+    def submit_order(self, symbol, order_type, side, submitted_quantity, submitted_price):
+        """提交订单"""
+        max_retries = 3
+        retry_delay = 5
+        futu_order_type = FutuOrderType.MARKET if order_type == "MARKET" else FutuOrderType.NORMAL
+        futu_side = TrdSide.BUY if side == "Buy" else TrdSide.SELL
+        price = 0.0 if futu_order_type == FutuOrderType.MARKET else float(submitted_price)
+
+        for attempt in range(max_retries):
+            try:
+                ret, data = self.trd_ctx.place_order(
+                    price=price,
+                    qty=float(submitted_quantity),
+                    code=symbol,
+                    trd_side=futu_side,
+                    order_type=futu_order_type,
+                    trd_env=self.trd_env,
+                    acc_index=self.acc_index
+                )
+                if ret == RET_OK:
+                    return data
+                else:
+                    raise Exception(data)
+            except Exception as e:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 订单提交失败，尝试 {attempt + 1}/{max_retries}: {str(e)}")
+                if attempt == max_retries - 1:
+                    error_msg = f"订单提交失败：{str(e)}\n股票代码：{symbol}\n操作：{futu_side}\n数量：{submitted_quantity}\n价格：{price}"
+                    self.send_error_notification(error_msg)
+                    raise
+                time.sleep(retry_delay)
+
+    def check_and_trade(self, last_known_datas):
+        """止盈止损"""
+
+        # 当前跟踪的所有股票
+        track_stock_codes = []
+        for pid, position_data in last_known_datas.items():
+            if position_data is None:
+                continue
+            portfolio_banlance = position_data['portfolio_banlance']
+            stock_codes = [f"{record["stock_code_suffix"]}.{record["stock_code"]}" for record in position_data.get("record_items", [])]
+            track_stock_codes.extend(stock_codes)
+        track_stock_codes = list(set(track_stock_codes))
+
+        ret, positions = self.trd_ctx.position_list_query(trd_env=self.trd_env, acc_index=self.acc_index)
+        if ret != RET_OK:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 获取持仓失败: {positions}")
+            return
+
+        for pos in positions.to_dict('records'):
+            stock_code = pos['code']
+            cost_price = float(pos['cost_price'])
+            current_qty = int(pos['qty'])
+            can_sell_qty = int(pos['can_sell_qty'])
+            pl_val = float(pos['pl_val'])
+            pl_ratio = float(pos['pl_ratio'])
+
+            if stock_code not in track_stock_codes:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 跳过非跟踪股票: {stock_code}")
+                continue
+            if current_qty <= 0 or can_sell_qty <= 0:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 跳过持仓为 0 的股票: {stock_code}")
+                continue
+
+            ret, quote = self.quote_ctx.get_market_snapshot([stock_code])
+            if ret != RET_OK:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 获取行情失败: {stock_code}")
+                continue
+            current_price = round(float(quote['last_price'][0]), 2)
+
+            if pl_ratio < 0 and pl_ratio < self.stop_loss_ratio:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备止损 {stock_code}，数量: {can_sell_qty}，价格: {current_price}")
+                resp = self.submit_order(
+                    symbol=stock_code,
+                    order_type="NORMAL",
+                    side="Sell",
+                    submitted_quantity=Decimal(can_sell_qty),
+                    submitted_price=Decimal(current_price)
+                )
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 止损订单提交结果: {resp}")
+            elif pl_ratio > 0 and pl_ratio > self.stop_profit_ratio:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备止盈 {stock_code}，数量: {can_sell_qty}，价格: {current_price}")
+                resp = self.submit_order(
+                    symbol=stock_code,
+                    order_type="NORMAL",
+                    side="Sell",
+                    submitted_quantity=Decimal(can_sell_qty),
+                    submitted_price=Decimal(current_price)
+                )
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 止盈订单提交结果: {resp}")
+
+    def track_and_trade(self, json_output):
+        """跟踪下单"""
+
+        portfolio_id = json_output.get("portfolio_id", None)
+        if portfolio_id is None:
+            return
+        pid_balance = self.pid_balance.get(portfolio_id, None)
+        if pid_balance is None:
+            return
+
+        ret, positions = self.trd_ctx.position_list_query(trd_env=self.trd_env, acc_index=self.acc_index)
+        if ret != RET_OK:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 获取持仓失败: {positions}")
+            return
+
+        positions_dict = {pos['code']: pos for pos in positions.to_dict('records')}
+
+        for change in json_output.get("changes", []):
+            stock_code = change["stock_code"]
+            stock_code_suffix = change["stock_code_suffix"]
+            stock_code = f"{stock_code_suffix}.{stock_code}"
+            change_type = change["change_type"]
+
+            ret, quote = self.quote_ctx.get_market_snapshot([stock_code])
+            if ret != RET_OK:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 获取行情失败: {stock_code}")
+                continue
+            current_price = round(float(quote['last_price'][0]), 2)
+
+            current_position = positions_dict.get(stock_code, {})
+            current_qty = int(current_position.get('qty', 0))
+
+            if current_qty == 0 and change_type != "OPEN":
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 跳过持仓为 0 且非开仓的股票: {stock_code}")
+                continue
+
+            target_ratio = change["new_ratio_percent"] / 100
+            current_ratio = current_qty * current_price / pid_balance if current_price > 0 else 0
+            if abs(current_ratio - target_ratio) < 0.05:
+                continue
+
+            target_qty = int(pid_balance * target_ratio / current_price) if current_price > 0 else 0
+            qty_diff = target_qty - current_qty
+
+            if change_type == "OPEN" and target_qty > 0 and current_qty == 0:
+                print(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备开仓买入 {stock_code}，数量: {target_qty}，价格: {current_price}")
+                resp = self.submit_order(
+                    symbol=stock_code,
+                    order_type="NORMAL",
+                    side="Buy",
+                    submitted_quantity=Decimal(target_qty),
+                    submitted_price=Decimal(current_price)
+                )
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 开仓买入订单提交结果: {resp}")
+            elif change_type == "CLOSE" and current_qty > 0:
+                print(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备清仓卖出 {stock_code}，数量: {current_qty}，价格: {current_price}")
+                resp = self.submit_order(
+                    symbol=stock_code,
+                    order_type="NORMAL",
+                    side="Sell",
+                    submitted_quantity=Decimal(current_qty),
+                    submitted_price=Decimal(current_price)
+                )
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 清仓卖出订单提交结果: {resp}")
+            elif change_type == "BUY" and qty_diff > 0:
+                print(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备买入 {stock_code}，数量: {qty_diff}，价格: {current_price}")
+                resp = self.submit_order(
+                    symbol=stock_code,
+                    order_type="NORMAL",
+                    side="Buy",
+                    submitted_quantity=Decimal(qty_diff),
+                    submitted_price=Decimal(current_price)
+                )
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 买入订单提交结果: {resp}")
+            elif change_type == "SELL" and qty_diff < 0:
+                print(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备卖出 {stock_code}，数量: {-qty_diff}，价格: {current_price}")
+                resp = self.submit_order(
+                    symbol=stock_code,
+                    order_type="NORMAL",
+                    side="Sell",
+                    submitted_quantity=Decimal(abs(qty_diff)),
+                    submitted_price=Decimal(current_price)
+                )
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 卖出订单提交结果: {resp}")
+            else:
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {stock_code} 无需调整，当前持仓已匹配目标")
+
+    def send_error_notification(self, error_message):
+        """错误通知邮件"""
+        subject = "[紧急通知] 订单提交失败"
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; max-width: 600px; margin: 20px auto; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <div style="font-size: 18px; font-weight: bold; color: #d9534f; margin-bottom: 15px;">订单提交失败通知</div>
+            <hr style="border: none; border-top: 1px solid #eee; margin-bottom: 15px;">
+            <div style="font-size: 14px; color: #555; margin-bottom: 10px;">时间：{datetime.now().strftime('%Y/%m/%d %H:%M:%S')}</div>
+            <div style="font-size: 14px; color: #555; margin-bottom: 10px;">错误详情：</div>
+            <pre style="font-size: 13px; color: #a94442; background-color: #f2dede; border: 1px solid #ebccd1; border-radius: 4px; padding: 10px; white-space: pre-wrap; word-wrap: break-word;">
+        {error_message}
+            </pre>
+            <div style="font-size: 12px; color: #888; margin-top: 20px;">
+                此邮件由自动化程序发送，请勿直接回复。
+            </div>
+        </div>
+        """
+        msg = MIMEMultipart('alternative')
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = RECEIVER_EMAIL
+        msg['Subject'] = subject
+        msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+        try:
+            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
+                server.login(SENDER_EMAIL, SENDER_PASSWORD)
+                server.send_message(msg)
+        except Exception as e:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 邮件发送失败: {str(e)}")
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 错误通知邮件已发送到 {RECEIVER_EMAIL}。")
+
+    def close(self):
+        """关闭交易和行情上下文"""
+        try:
+            self.trd_ctx.close()
+            self.quote_ctx.close()
+        except AttributeError as e:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 关闭上下文时出错: {e}")
+
+
 class LongPortTrader():
     '''LongPort Store for backtrader'''
 
@@ -51,27 +299,6 @@ class LongPortTrader():
         self.loss_threshold = float(os.getenv("LOSS_THRESHOLD", "0.01"))
         self.profit_threshold = float(os.getenv("PROFIT_THRESHOLD", "0.04"))
 
-    def check_trading_hours(self, market='US'):
-        """检查当前是否在交易时间"""
-        # 获取股票市场信息
-        trading_hours = {
-            "US": {"start": "04:00", "end": "20:00"},  # 美股市场交易时间
-            "HK": {"start": "09:30", "end": "16:00"}  # 香港市场交易时间
-        }
-
-        eastern = pytz.timezone('US/Eastern')
-        hk = pytz.timezone('Asia/Hong_Kong')
-        now = datetime.now(eastern) if market == "US" else datetime.now(hk)
-        now_time = now.strftime("%H:%M")
-
-        # 判断是否为周六或周日（weekday() 返回 5 表示周六，6 表示周日）
-        if now.weekday() in [5, 6]:
-            return False
-
-        if trading_hours[market]["start"] <= now_time <= trading_hours[market]["end"]:
-            return True
-        else:
-            return False
     def submit_order(self, symbol, order_type, side, submitted_quantity, time_in_force, submitted_price, remark):
         """
         提交订单的封装方法。
@@ -162,8 +389,10 @@ class LongPortTrader():
         根据持仓情况止盈止损
         """
         for pid, position_data in last_known_datas.items():
+            if position_data is None:
+                continue
             portfolio_banlance = position_data['portfolio_banlance']
-            stock_codes = [record["stock_code"] for record in position_data.get("record_items", [])]
+            stock_codes = [f"{record["stock_code"]}.{record["stock_code_suffix"]}" for record in position_data.get("record_items", [])]
             # 获取当前所有持仓
             current_positions = []
             resp = self.ctx.stock_positions(stock_codes)
@@ -242,7 +471,8 @@ class LongPortTrader():
         # 处理每个变化项
         for change in json_output.get("changes", []):
             stock_code = change["stock_code"]
-            current_price = change["current_price"]
+            stock_code_suffix = change["stock_code_suffix"]
+            stock_code = f"{stock_code}.{stock_code_suffix}"
             change_type = change["change_type"]
 
             # 获取该股票最新的价格
@@ -343,6 +573,29 @@ class LongPortTrader():
 
 
 # --- 辅助函数 ---
+
+def check_trading_hours(market='US'):
+    """检查当前是否在交易时间"""
+    # 获取股票市场信息
+    trading_hours = {
+        "US": {"start": "04:00", "end": "20:00"},  # 美股市场交易时间
+        "HK": {"start": "09:30", "end": "16:00"}  # 香港市场交易时间
+    }
+
+    eastern = pytz.timezone('US/Eastern')
+    hk = pytz.timezone('Asia/Hong_Kong')
+    now = datetime.now(eastern) if market == "US" else datetime.now(hk)
+    now_time = now.strftime("%H:%M")
+
+    # 判断是否为周六或周日（weekday() 返回 5 表示周六，6 表示周日）
+    if now.weekday() in [5, 6]:
+        return False
+
+    if trading_hours[market]["start"] <= now_time <= trading_hours[market]["end"]:
+        return True
+    else:
+        return False
+
 def load_last_known_data(portfolio_id):
     """从本地文件加载上次已知的数据，并确保数据格式正确。
     
@@ -447,8 +700,8 @@ def update_fetch_data(new_full_data):
 
     updated_records = []
     for item_new in new_full_data.get('record_items', []):
-        item_new['stock_code_suffix'] = '.HK' if item_new.get('market', 0) == 1 else ('.US' if item_new.get('market', 0) == 2 else '')
-        item_new['stock_code'] = item_new.get('stock_code', 'UNKNOWN') + item_new['stock_code_suffix']
+        item_new['stock_code_suffix'] = 'HK' if item_new.get('market', 0) == 1 else ('US' if item_new.get('market', 0) == 2 else '')
+        item_new['stock_code'] = item_new.get('stock_code', 'UNKNOWN')
         
         # 计算当前价格和成本价（单位转换）
         item_new['current_price'] = round(float(item_new.get('current_price', 0)) / 10**9, 2) if item_new.get('current_price') is not None else 0
@@ -631,7 +884,7 @@ def generate_change_data(changed_items, portfolio_id):
 
 
 # --- 交易接口调用逻辑（修改为生成邮件并发送）---
-def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_email=False, portfolio_id=""):
+def call_trade_api(old_full_data, new_full_data, trader=None, with_email=False, portfolio_id=""):
     """
     根据数据变化生成邮件卡片并发送。
     
@@ -657,8 +910,8 @@ def call_trade_api(old_full_data, new_full_data, longport_trader=None, with_emai
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 检测到股票持仓数据变化（组合ID: {portfolio_id}）！")
             print(json.dumps(json_content, indent=4, ensure_ascii=False))
             # 仅当配置了实盘交易，才进行实盘交易
-            if longport_trader:
-                longport_trader.track_and_trade(json_content)
+            if trader:
+                trader.track_and_trade(json_content)
             if with_email:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备生成邮件卡片并发送（组合ID: {portfolio_id}）...")
                 subject = f"【{portfolio_name}】股票持仓变动通知 - {datetime.now().strftime('%Y/%m/%d %H:%M')}"
@@ -687,9 +940,16 @@ def main():
         last_known_datas[pid] = load_last_known_data(pid)
 
     #初始化实盘示例
-    longport_trader = LongPortTrader()
+    trader = None
+    trader_set = os.getenv("TRADER")
+    if trader_set == "longport":
+        trader = LongPortTrader()
+    elif trader_set == "futu":
+        trader = FutuTrader()
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 券商选择：{trader_set}", flush=True)
+
     while True:
-        longport_trader.check_and_trade(last_known_datas)
+        trader.check_and_trade(last_known_datas)
         # 对每个组合执行检查和交易
         for pid, pname in PORTFOLIO_ID_NAMES.items():
             # 获取当前组合的数据
@@ -708,12 +968,12 @@ def main():
                 continue
 
             # 比较数据是否有变化
-            has_changes = call_trade_api(last_known_full_data, current_full_data, longport_trader, True, pid)
+            has_changes = call_trade_api(last_known_full_data, current_full_data, trader, True, pid)
             if has_changes:
                 save_current_data(current_full_data, pid)
                 last_known_datas[pid] = current_full_data
         # 等待下一轮询
-        interval_seconds = POLLING_INTERVAL_SECONDS if longport_trader.check_trading_hours() else 3600
+        interval_seconds = POLLING_INTERVAL_SECONDS if check_trading_hours() else 3600
         time.sleep(interval_seconds)
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 新一轮查询开始...", flush=True)
 

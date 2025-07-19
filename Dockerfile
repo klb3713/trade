@@ -11,4 +11,4 @@ COPY . /app
 RUN pip install --no-cache-dir -r requirement.txt -i https://mirrors.aliyun.com/pypi/simple
 
 # 运行应用
-CMD ["python", "futu_fetch.py"]
+CMD ["python", "track_and_trade.py"]

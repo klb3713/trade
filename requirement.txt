@@ -12,3 +12,4 @@ backtesting
 pandas_ta
 akshare
 python-dotenv
+futu-api
