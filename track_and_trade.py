@@ -139,7 +139,7 @@ class FutuTrader:
             else:
                 current_price = round(float(quote['last_price'][0]), 2)
 
-            if pl_ratio < 0 and pl_ratio < self.stop_loss_ratio:
+            if pl_ratio < 0 and abs(pl_ratio) > self.stop_loss_ratio:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备止损 {stock_code}，数量: {can_sell_qty}，价格: {current_price}")
                 resp = self.submit_order(
                     symbol=stock_code,
