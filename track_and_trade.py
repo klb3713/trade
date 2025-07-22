@@ -52,8 +52,8 @@ class FutuTrader:
         self.quote_ctx = OpenQuoteContext(host=self.host, port=self.port)
         self.usd_balance = TOTAL_BANLANCE
         self.pid_balance = PORTFOLIO_ID_BANLANCES
-        # self.loss_threshold = float(os.getenv("LOSS_THRESHOLD", "0.01"))
-        # self.profit_threshold = float(os.getenv("PROFIT_THRESHOLD", "0.04"))
+        self.loss_threshold = float(os.getenv("LOSS_THRESHOLD", "0.01"))
+        self.profit_threshold = float(os.getenv("PROFIT_THRESHOLD", "0.04"))
         self.stop_loss_ratio = float(os.getenv("STOP_LOSS_RATIO", "10.0"))
         self.stop_profit_ratio = float(os.getenv("STOP_PROFIT_RATIO", "20.0"))
         if self.trd_env == TrdEnv.REAL:
@@ -102,6 +102,7 @@ class FutuTrader:
 
         # 当前跟踪的所有股票
         track_stock_codes = []
+        portfolio_banlance = 0.0
         for pid, position_data in last_known_datas.items():
             if position_data is None:
                 continue
@@ -139,7 +140,8 @@ class FutuTrader:
             else:
                 current_price = round(float(quote['last_price'][0]), 2)
 
-            if pl_ratio < 0 and abs(pl_ratio) > self.stop_loss_ratio:
+            trade_banlance = portfolio_banlance * 7.85 if stock_code.endswith('HK') else portfolio_banlance
+            if pl_ratio < 0 and abs(pl_ratio) > self.stop_loss_ratio or abs(pl_val) / trade_banlance > self.loss_threshold:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备止损 {stock_code}，数量: {can_sell_qty}，价格: {current_price}")
                 resp = self.submit_order(
                     symbol=stock_code,
@@ -149,7 +151,7 @@ class FutuTrader:
                     submitted_price=Decimal(current_price)
                 )
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 止损订单提交结果: {resp}")
-            elif pl_ratio > 0 and pl_ratio > self.stop_profit_ratio:
+            elif pl_ratio > 0 and pl_ratio > self.stop_profit_ratio or abs(pl_val) / trade_banlance > self.profit_threshold:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 准备止盈 {stock_code}，数量: {can_sell_qty}，价格: {current_price}")
                 resp = self.submit_order(
                     symbol=stock_code,
@@ -183,6 +185,7 @@ class FutuTrader:
             stock_code = f"{stock_code_suffix}.{stock_code}"
             change_type = change["change_type"]
             current_price = change["current_price"]
+            trade_balance = pid_balance * 7.85 if stock_code_suffix == "HK" else pid_balance
 
             # futu 行情要开月卡 60 美元，这里默认使用跟踪到的股价
             ret, quote = self.quote_ctx.get_market_snapshot([stock_code])
@@ -199,11 +202,11 @@ class FutuTrader:
                 continue
 
             target_ratio = change["new_ratio_percent"] / 100
-            current_ratio = current_qty * current_price / pid_balance if current_price > 0 else 0
+            current_ratio = current_qty * current_price / trade_balance if current_price > 0 else 0
             if abs(current_ratio - target_ratio) < 0.05:
                 continue
 
-            target_qty = int(pid_balance * target_ratio / current_price) if current_price > 0 else 0
+            target_qty = int(trade_balance * target_ratio / current_price) if current_price > 0 else 0
             qty_diff = target_qty - current_qty
 
             if change_type == "OPEN" and target_qty > 0 and current_qty == 0:
@@ -303,6 +306,8 @@ class LongPortTrader():
         self.pid_balance = PORTFOLIO_ID_BANLANCES
         self.loss_threshold = float(os.getenv("LOSS_THRESHOLD", "0.01"))
         self.profit_threshold = float(os.getenv("PROFIT_THRESHOLD", "0.04"))
+        self.stop_loss_ratio = float(os.getenv("STOP_LOSS_RATIO", "10.0"))
+        self.stop_profit_ratio = float(os.getenv("STOP_PROFIT_RATIO", "20.0"))
 
     def submit_order(self, symbol, order_type, side, submitted_quantity, time_in_force, submitted_price, remark):
         """
@@ -423,9 +428,11 @@ class LongPortTrader():
                 if not (current_price > 0 and cost_price > 0):
                     continue
 
+                trade_banlance = portfolio_banlance * 7.85 if stock_code.endswith('HK') else portfolio_banlance
                 if current_price < cost_price:
                     loss = (cost_price - current_price) * current_qty
-                    if loss / portfolio_banlance > self.loss_threshold:
+                    loss_ratio = (cost_price - current_price) / cost_price * 100
+                    if loss / trade_banlance > self.loss_threshold or loss_ratio > self.stop_loss_ratio:
                         # 止损逻辑
                         print(f"准备止损 {stock_code}，数量: {-available_qty}，价格: {current_price}")
                         resp = self.submit_order(
@@ -440,7 +447,8 @@ class LongPortTrader():
                         print(f"止损订单提交结果: {resp}")
                 elif current_price > cost_price:
                     profit = (current_price - cost_price) * current_qty
-                    if profit / portfolio_banlance > self.profit_threshold:
+                    profit_ratio = (current_price - cost_price) / cost_price * 100
+                    if profit / trade_banlance > self.profit_threshold or profit_ratio > self.stop_profit_ratio:
                         # 止盈逻辑
                         print(f"准备止盈 {stock_code}，数量: {-available_qty}，价格: {current_price}")
                         resp = self.submit_order(
@@ -479,6 +487,7 @@ class LongPortTrader():
             stock_code_suffix = change["stock_code_suffix"]
             stock_code = f"{stock_code}.{stock_code_suffix}"
             change_type = change["change_type"]
+            trade_balance = pid_balance * 7.85 if stock_code_suffix == "HK" else pid_balance
 
             # 获取该股票最新的价格
             cur_quote = self.quote_ctx.quote([stock_code])[0]
@@ -494,12 +503,12 @@ class LongPortTrader():
 
             # 计算目标仓位（这里只是一个示例，实际逻辑可能更复杂）
             target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
-            current_ratio = current_qty * current_price / pid_balance
+            current_ratio = current_qty * current_price / trade_balance
             if abs(current_ratio - target_ratio) < 0.05:
                 continue
 
             # 假设总市值资金为账户余额的一定比例（这只是一个简单示例）
-            target_qty = int(pid_balance * target_ratio / current_price) if current_price > 0 else 0
+            target_qty = int(trade_balance * target_ratio / current_price) if current_price > 0 else 0
 
             # 计算需要买入或卖出的数量
             qty_diff = target_qty - current_qty
