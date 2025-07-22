@@ -196,6 +196,8 @@ class FutuTrader:
 
             current_position = positions_dict.get(stock_code, {})
             current_qty = int(current_position.get('qty', 0))
+            nominal_price = round(float(current_position.get('nominal_price', 0.0)), 2)
+            current_price = nominal_price if nominal_price > 0 else current_price   # 使用持仓的行情报价
 
             if current_qty == 0 and change_type != "OPEN":
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 跳过持仓为 0 且非开仓的股票: {stock_code}")
