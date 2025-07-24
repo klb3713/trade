@@ -766,8 +766,8 @@ def get_changes(old_full_data, new_full_data):
             old_total_ratio = old_item.get('total_ratio', 0)
             new_total_ratio = new_item.get('total_ratio', 0)
 
-            # 持仓比例超过1%才算变化
-            if abs(old_total_ratio - new_total_ratio) > 1:
+            # 持仓比例diff超过5%才算变化
+            if abs(old_total_ratio - new_total_ratio) > 5:
                 changes.append((old_item, new_item))
         else:
             # 股票被移除
@@ -950,7 +950,10 @@ def main():
         trader = LongPortTrader()
     elif trader_set == "futu":
         trader = FutuTrader()
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 券商选择：{trader_set}", flush=True)
+    if trader:
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 券商选择：{trader_set}", flush=True)
+    else:
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 未设置券商环境变量TRADER的值，将只跟踪不交易。", flush=True)
 
     while True:
         trader.check_and_trade(last_known_datas)
