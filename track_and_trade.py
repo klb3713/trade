@@ -205,7 +205,10 @@ class FutuTrader:
 
             target_ratio = change["new_ratio_percent"] / 100
             current_ratio = current_qty * current_price / trade_balance if current_price > 0 else 0
-            if abs(current_ratio - target_ratio) < 0.05:
+            change_diff = (change["new_ratio_percent"] - change["old_ratio_percent"]) / 100
+            target_diff = target_ratio - current_ratio
+            # 变化比例小于 0.05 视为波动；实际交易 diff 和跟踪的 diff 差大于 0.05，说明止盈止损过，则忽略
+            if abs(target_diff) < 0.05 or abs(target_diff - change_diff) > 0.05:
                 continue
 
             target_qty = int(trade_balance * target_ratio / current_price) if current_price > 0 else 0
@@ -506,7 +509,10 @@ class LongPortTrader():
             # 计算目标仓位（这里只是一个示例，实际逻辑可能更复杂）
             target_ratio = change["new_ratio_percent"] / 100  # 目标持仓比例
             current_ratio = current_qty * current_price / trade_balance
-            if abs(current_ratio - target_ratio) < 0.05:
+            change_diff = (change["new_ratio_percent"] - change["old_ratio_percent"]) / 100
+            target_diff = target_ratio - current_ratio
+            # 变化比例小于 0.05 视为波动；实际交易 diff 和跟踪的 diff 差大于 0.05，说明止盈止损过，则忽略
+            if abs(target_diff) < 0.05 or abs(target_diff - change_diff) > 0.05:
                 continue
 
             # 假设总市值资金为账户余额的一定比例（这只是一个简单示例）
