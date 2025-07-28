@@ -12,6 +12,7 @@
 - **数据获取**: 集成TuShare、AkShare、Yahoo Finance等多个数据源
 - **风险控制**: 内置风险管理模块和止损机制
 - **统计分析**: 协整分析、统计套利等高级分析方法
+- **基金分析**: 基金数据获取和评估工具
 
 ## 项目结构
 
@@ -35,6 +36,12 @@ trade/
 ├── statistics/           # 统计分析工具
 ├── longport_test/        # LongPort API测试
 ├── data/                # 历史数据目录
+├── fund_eval/           # 基金评估工具
+│   ├── fund_estimator.py # 基金净值估算数据更新工具
+│   ├── schedule_estimator.sh # 定时任务脚本
+│   ├── fund_info.csv     # 基金信息文件
+│   ├── fund_info_with_estimation.csv # 带估算数据的基金信息文件
+│   └── README.md         # 基金评估工具说明
 └── bitcoin/             # 加密货币相关
 ```
 
@@ -76,12 +83,23 @@ cd online_trader
 python main.py
 ```
 
+### 基金数据更新
+
+基金净值估算数据更新工具会在每个工作日下午2点自动运行，获取最新的基金估算净值数据。
+
+手动执行更新：
+```bash
+cd /Users/klb3713/work/trade
+python fund_eval/fund_estimator.py
+```
+
 ## 数据源支持
 
 - **A股数据**: TuShare Pro、AkShare
 - **美股数据**: Yahoo Finance、LongPort
 - **加密货币**: CCXT交易所集成
 - **实时数据**: LongPort实时行情
+- **基金数据**: 东方财富网基金数据
 
 ## 内置策略详解
 
@@ -164,10 +182,7 @@ python bitcoin/cross_exchange.py
 
 ### 基金评估
 
-评估基金表现：
-```bash
-python fund_eval.py --fund-code "005918" --start-date "2023-01-01"
-```
+基金净值估算数据更新工具会自动获取并更新基金的实时估算净值数据。
 
 ## 数据获取工具
 
@@ -232,4 +247,3 @@ class MyStrategy(StrategySelfBase):
 本项目仅供学习和研究使用，不构成投资建议。使用本系统进行实盘交易产生的风险由用户自行承担。请在充分了解和测试后再用于实盘交易。
 或者
 poetry install
-
