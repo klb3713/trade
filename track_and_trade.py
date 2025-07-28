@@ -87,8 +87,6 @@ class FutuTrader:
                 )
                 if ret == RET_OK:
                     return data
-                else:
-                    raise Exception(data)
             except Exception as e:
                 print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 订单提交失败，尝试 {attempt + 1}/{max_retries}: {str(e)}")
                 if attempt == max_retries - 1:
@@ -352,7 +350,6 @@ class LongPortTrader():
                     # 达到最大重试次数后发送邮件通知
                     error_msg = f"订单提交失败（网络问题）：{str(e)}\n股票代码：{symbol}\n操作：{side.name}\n数量：{submitted_quantity}\n价格：{submitted_price}"
                     self.send_error_notification(error_msg)
-                    raise  # 抛出异常
                 time.sleep(retry_delay)  # 等待后重试
 
             except Exception as e:
@@ -361,7 +358,6 @@ class LongPortTrader():
                     # 发送邮件通知其他类型的错误
                     error_msg = f"订单提交失败（未知错误）：{str(e)}\n股票代码：{symbol}\n操作：{side.name}\n数量：{submitted_quantity}\n价格：{submitted_price}"
                     self.send_error_notification(error_msg)
-                    raise  # 抛出异常
                 time.sleep(retry_delay)  # 等待后重试
 
     def send_error_notification(self, error_message):
