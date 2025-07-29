@@ -78,6 +78,27 @@ class FundEstimator:
                     logger.error(f"获取基金估算数据失败，已达到最大重试次数: {e}")
                     raise
 
+    def get_fund_historical_growth_data(self):
+        """获取基金历史增长率数据"""
+        max_retries = 3
+        retry_interval = 5
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"正在获取基金历史增长率数据... (尝试 {attempt + 1}/{max_retries})")
+                fund_rank_df = ak.fund_open_fund_rank_em(symbol="全部")
+                fund_rank_df['基金代码'] = fund_rank_df['基金代码'].astype(str)
+                logger.info(f"成功获取基金历史增长率数据，共 {len(fund_rank_df)} 条记录")
+                return fund_rank_df
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"获取基金历史增长率数据失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.info(f"等待 {retry_interval} 秒后重试...")
+                    time.sleep(retry_interval)
+                else:
+                    logger.error(f"获取基金历史增长率数据失败，已达到最大重试次数: {e}")
+                    raise
+
     def get_column_names(self, fund_estimation_df):
         """
         获取估算数据的列名
@@ -109,13 +130,14 @@ class FundEstimator:
             
         return columns
         
-    def update_fund_data(self, fund_df, fund_estimation_df):
+    def update_fund_data(self, fund_df, fund_estimation_df, fund_rank_df=None):
         """
-        更新基金数据，添加估算信息
+        更新基金数据，添加估算信息和历史增长率数据
         
         Args:
             fund_df (pd.DataFrame): 基金信息数据
             fund_estimation_df (pd.DataFrame): 基金估算数据
+            fund_rank_df (pd.DataFrame, optional): 基金历史增长率数据
             
         Returns:
             pd.DataFrame: 更新后的基金数据
@@ -128,6 +150,23 @@ class FundEstimator:
         result_df['估算增长率'] = None
         result_df['公布单位净值'] = None
         result_df['公布日增长率'] = None
+        
+        # 添加新列用于存储历史增长率数据
+        result_df['近1周'] = None
+        result_df['近1月'] = None
+        result_df['近3月'] = None
+        result_df['近6月'] = None
+        result_df['近1年'] = None
+        result_df['近2年'] = None
+        result_df['近3年'] = None
+        result_df['今年来'] = None
+        result_df['成立来'] = None
+        
+        # 添加新列用于存储基金基本信息
+        result_df['日期'] = None
+        result_df['单位净值'] = None
+        result_df['累计净值'] = None
+        result_df['日增长率'] = None
 
         # 获取列名
         columns = self.get_column_names(fund_estimation_df)
@@ -154,6 +193,24 @@ class FundEstimator:
                 found_count += 1
             else:
                 logger.info(f"未找到基金 {fund_code} 的估算数据")
+            
+            # 如果提供了历史增长率数据，查找对应的历史增长率信息
+            if fund_rank_df is not None:
+                rank_row = fund_rank_df[fund_rank_df['基金代码'] == fund_code]
+                if not rank_row.empty:
+                    # 提取历史增长率数据
+                    historical_columns = ['近1周', '近1月', '近3月', '近6月', '近1年', '近2年', '近3年', '今年来', '成立来']
+                    for col in historical_columns:
+                        if col in rank_row.columns:
+                            result_df.at[index, col] = rank_row[col].values[0]
+                    
+                    # 提取基金基本信息
+                    basic_columns = ['日期', '单位净值', '累计净值', '日增长率']
+                    for col in basic_columns:
+                        if col in rank_row.columns:
+                            result_df.at[index, col] = rank_row[col].values[0]
+                else:
+                    logger.info(f"未找到基金 {fund_code} 的历史增长率数据")
             
             # 添加短暂延迟以避免请求过于频繁
             time.sleep(0.01)
@@ -211,6 +268,7 @@ class FundEstimator:
                 th {{ background-color: #f2f2f2; }}
                 .positive {{ color: #ff0000; }}
                 .negative {{ color: #008000; }}
+                .historical-table {{ margin-top: 30px; }}
             </style>
         </head>
         <body>
@@ -262,6 +320,83 @@ class FundEstimator:
                     <td class="{pub_growth_class}">{pub_growth}</td>
                 </tr>
             """
+        
+        html_content += """
+            </table>
+            
+            <h2 class="historical-table">基金历史增长率数据</h2>
+            <table>
+                <tr>
+                    <th>基金代码</th>
+                    <th>基金名称</th>
+                    <th>日期</th>
+                    <th>单位净值</th>
+                    <th>累计净值</th>
+                    <th>日增长率</th>
+                    <th>近1周</th>
+                    <th>近1月</th>
+                    <th>近3月</th>
+                    <th>近6月</th>
+                    <th>近1年</th>
+                    <th>近3年</th>
+                    <th>今年来</th>
+                    <th>成立来</th>
+                </tr>
+        """
+        
+        # 添加历史增长率数据
+        for _, row in result_df_sorted.iterrows():
+            # 获取基金基本信息
+            basic_info = []
+            for col in ['日期', '单位净值', '累计净值', '日增长率']:
+                value = row[col] if pd.notna(row[col]) else '---'
+                # 为日增长率添加颜色样式
+                value_class = ""
+                if col == '日增长率' and value != '---':
+                    try:
+                        val = float(str(value).rstrip('%'))
+                        value_class = "positive" if val > 0 else "negative"
+                    except:
+                        pass
+                basic_info.append((value, value_class))
+            
+            # 获取历史增长率数据
+            historical_cols = ['近1周', '近1月', '近3月', '近6月', '近1年', '近3年', '今年来', '成立来']
+            historical_data = []
+            
+            for col in historical_cols:
+                value = row[col] if pd.notna(row[col]) else '---'
+                # 为历史增长率数据添加颜色样式
+                value_class = ""
+                if value != '---':
+                    try:
+                        val = float(str(value).rstrip('%'))
+                        value_class = "positive" if val > 0 else "negative"
+                    except:
+                        pass
+                historical_data.append((value, value_class))
+            
+            html_content += f"""
+                <tr>
+                    <td>{row['基金代码']}</td>
+                    <td>{row['基金名称']}</td>
+            """
+            
+            # 添加基本信息列
+            for value, value_class in basic_info:
+                if value_class:
+                    html_content += f'<td class="{value_class}">{value}</td>'
+                else:
+                    html_content += f'<td>{value}</td>'
+            
+            # 添加历史增长率列
+            for value, value_class in historical_data:
+                if value_class:
+                    html_content += f'<td class="{value_class}">{value}</td>'
+                else:
+                    html_content += f'<td>{value}</td>'
+            
+            html_content += '</tr>'
         
         html_content += """
             </table>
@@ -317,8 +452,11 @@ class FundEstimator:
             # 获取估算数据
             fund_estimation_df = self.get_fund_estimation_data()
             
+            # 获取历史增长率数据
+            fund_rank_df = self.get_fund_historical_growth_data()
+            
             # 更新基金数据
-            result_df = self.update_fund_data(fund_df, fund_estimation_df)
+            result_df = self.update_fund_data(fund_df, fund_estimation_df, fund_rank_df)
             
             # 保存数据
             self.save_data(result_df)
