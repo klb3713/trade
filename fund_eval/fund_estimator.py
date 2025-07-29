@@ -50,7 +50,7 @@ class FundEstimator:
     def load_fund_data(self):
         """加载基金信息数据"""
         try:
-            fund_df = pd.read_csv(self.fund_info_path)
+            fund_df = pd.read_csv(self.fund_info_path, dtype={'基金代码': str})
             logger.info(f"成功加载基金信息文件，共 {len(fund_df)} 只基金")
             return fund_df
         except Exception as e:
@@ -68,25 +68,7 @@ class FundEstimator:
         except Exception as e:
             logger.error(f"获取基金估算数据失败: {e}")
             raise
-            
-    def standardize_fund_codes(self, fund_df, fund_estimation_df):
-        """
-        标准化基金代码格式
-        
-        Args:
-            fund_df (pd.DataFrame): 基金信息数据
-            fund_estimation_df (pd.DataFrame): 基金估算数据
-            
-        Returns:
-            tuple: 标准化后的基金信息数据和估算数据
-        """
-        # 标准化基金代码格式（确保都是6位数字的字符串，不足6位的前面补0）
-        fund_df = fund_df.copy()
-        fund_df['基金代码'] = fund_df['基金代码'].apply(lambda x: f"{int(x):06d}")
-        fund_estimation_df = fund_estimation_df.copy()
-        
-        return fund_df, fund_estimation_df
-        
+
     def get_column_names(self, fund_estimation_df):
         """
         获取估算数据的列名
@@ -137,10 +119,7 @@ class FundEstimator:
         result_df['估算增长率'] = None
         result_df['公布单位净值'] = None
         result_df['公布日增长率'] = None
-        
-        # 标准化基金代码
-        fund_df, fund_estimation_df = self.standardize_fund_codes(fund_df, fund_estimation_df)
-        
+
         # 获取列名
         columns = self.get_column_names(fund_estimation_df)
         
