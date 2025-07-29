@@ -99,6 +99,52 @@ class FundEstimator:
                     logger.error(f"获取基金历史增长率数据失败，已达到最大重试次数: {e}")
                     raise
 
+    def get_fund_achievement_data(self, fund_codes):
+        """获取基金业绩数据（雪球接口）
+        
+        Args:
+            fund_codes (list): 基金代码列表
+            
+        Returns:
+            dict: 基金代码到最大回撤数据的映射
+        """
+        max_retries = 3
+        retry_interval = 5
+        result = {}
+        
+        # 定义需要保留的周期
+        target_periods = ['成立以来', '今年以来', '近1月', '近3月', '近6月', '近1年', '近3年', '近5年']
+        
+        for fund_code in fund_codes:
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"正在获取基金 {fund_code} 的业绩数据... (尝试 {attempt + 1}/{max_retries})")
+                    fund_achievement_df = ak.fund_individual_achievement_xq(symbol=fund_code)
+                    
+                    # 只保留指定周期的数据，并提取最大回撤
+                    filtered_data = fund_achievement_df[
+                        (fund_achievement_df['周期'].isin(target_periods)) & 
+                        (fund_achievement_df['本产品最大回撒'].notna())
+                    ][['周期', '本产品最大回撒']].copy()
+                    
+                    # 转换为字典格式方便后续处理
+                    result[fund_code] = {}
+                    for _, row in filtered_data.iterrows():
+                        result[fund_code][row['周期']] = row['本产品最大回撒']
+                    
+                    logger.info(f"成功获取基金 {fund_code} 的业绩数据")
+                    break  # 成功获取后跳出重试循环
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"获取基金 {fund_code} 业绩数据失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                        logger.info(f"等待 {retry_interval} 秒后重试...")
+                        time.sleep(retry_interval)
+                    else:
+                        logger.error(f"获取基金 {fund_code} 业绩数据失败，已达到最大重试次数: {e}")
+                        result[fund_code] = {}  # 添加空字典避免后续处理出错
+                        
+        return result
+
     def get_column_names(self, fund_estimation_df):
         """
         获取估算数据的列名
@@ -109,7 +155,7 @@ class FundEstimator:
         Returns:
             dict: 包含各列名的字典
         """
-        actual_columns = fund_estimation_df.columns.tolist()
+        actual_columns = fund_estimation_df.columns.tolist() if fund_estimation_df else []
         
         # 获取估算数据列名
         est_value_col = next((col for col in actual_columns if '估算数据-估算值' in col), None)
@@ -130,14 +176,15 @@ class FundEstimator:
             
         return columns
         
-    def update_fund_data(self, fund_df, fund_estimation_df, fund_rank_df=None):
+    def update_fund_data(self, fund_df, fund_estimation_df=None, fund_rank_df=None, fund_achievement_data=None):
         """
-        更新基金数据，添加估算信息和历史增长率数据
+        更新基金数据，添加估算信息、历史增长率数据和业绩数据
         
         Args:
             fund_df (pd.DataFrame): 基金信息数据
-            fund_estimation_df (pd.DataFrame): 基金估算数据
+            fund_estimation_df (pd.DataFrame, optional): 基金估算数据
             fund_rank_df (pd.DataFrame, optional): 基金历史增长率数据
+            fund_achievement_data (dict, optional): 基金业绩数据
             
         Returns:
             pd.DataFrame: 更新后的基金数据
@@ -167,6 +214,16 @@ class FundEstimator:
         result_df['单位净值'] = None
         result_df['累计净值'] = None
         result_df['日增长率'] = None
+        
+        # 添加新列用于存储基金最大回撤数据
+        result_df['成立以来_最大回撤'] = None
+        result_df['今年以来_最大回撤'] = None
+        result_df['近1月_最大回撤'] = None
+        result_df['近3月_最大回撤'] = None
+        result_df['近6月_最大回撤'] = None
+        result_df['近1年_最大回撤'] = None
+        result_df['近3年_最大回撤'] = None
+        result_df['近5年_最大回撤'] = None
 
         # 获取列名
         columns = self.get_column_names(fund_estimation_df)
@@ -177,22 +234,23 @@ class FundEstimator:
             fund_code = row['基金代码']
             
             # 在估算数据中查找匹配的基金
-            estimation_row = fund_estimation_df[fund_estimation_df['基金代码'] == fund_code]
-            
-            if not estimation_row.empty:
-                # 提取估算数据
-                if columns['est_value']:
-                    result_df.at[index, '估算值'] = estimation_row[columns['est_value']].values[0]
-                if columns['est_growth']:
-                    result_df.at[index, '估算增长率'] = estimation_row[columns['est_growth']].values[0]
-                if columns['pub_value']:
-                    result_df.at[index, '公布单位净值'] = estimation_row[columns['pub_value']].values[0]
-                if columns['pub_growth']:
-                    result_df.at[index, '公布日增长率'] = estimation_row[columns['pub_growth']].values[0]
-                
-                found_count += 1
-            else:
-                logger.info(f"未找到基金 {fund_code} 的估算数据")
+            if fund_estimation_df is not None:
+                estimation_row = fund_estimation_df[fund_estimation_df['基金代码'] == fund_code]
+
+                if not estimation_row.empty:
+                    # 提取估算数据
+                    if columns['est_value']:
+                        result_df.at[index, '估算值'] = estimation_row[columns['est_value']].values[0]
+                    if columns['est_growth']:
+                        result_df.at[index, '估算增长率'] = estimation_row[columns['est_growth']].values[0]
+                    if columns['pub_value']:
+                        result_df.at[index, '公布单位净值'] = estimation_row[columns['pub_value']].values[0]
+                    if columns['pub_growth']:
+                        result_df.at[index, '公布日增长率'] = estimation_row[columns['pub_growth']].values[0]
+
+                    found_count += 1
+                else:
+                    logger.info(f"未找到基金 {fund_code} 的估算数据")
             
             # 如果提供了历史增长率数据，查找对应的历史增长率信息
             if fund_rank_df is not None:
@@ -211,6 +269,15 @@ class FundEstimator:
                             result_df.at[index, col] = rank_row[col].values[0]
                 else:
                     logger.info(f"未找到基金 {fund_code} 的历史增长率数据")
+                    
+            # 如果提供了基金业绩数据，查找对应的最大回撤信息
+            if fund_achievement_data is not None and fund_code in fund_achievement_data:
+                achievement_data = fund_achievement_data[fund_code]
+                # 提取最大回撤数据
+                max_drawdown_columns = ['成立以来', '今年以来', '近1月', '近3月', '近6月', '近1年', '近3年', '近5年']
+                for col in max_drawdown_columns:
+                    if col in achievement_data:
+                        result_df.at[index, f'{col}_最大回撤'] = achievement_data[col]
             
             # 添加短暂延迟以避免请求过于频繁
             time.sleep(0.01)
@@ -400,6 +467,55 @@ class FundEstimator:
         
         html_content += """
             </table>
+            
+            <h2 class="historical-table">基金最大回撤数据</h2>
+            <table>
+                <tr>
+                    <th>基金代码</th>
+                    <th>基金名称</th>
+                    <th>成立以来_最大回撤</th>
+                    <th>今年以来_最大回撤</th>
+                    <th>近1月_最大回撤</th>
+                    <th>近3月_最大回撤</th>
+                    <th>近6月_最大回撤</th>
+                    <th>近1年_最大回撤</th>
+                    <th>近3年_最大回撤</th>
+                    <th>近5年_最大回撤</th>
+                </tr>
+        """
+        
+        # 添加最大回撤数据
+        for _, row in result_df_sorted.iterrows():
+            html_content += f"""
+                <tr>
+                    <td>{row['基金代码']}</td>
+                    <td>{row['基金名称']}</td>
+            """
+            
+            # 获取最大回撤数据
+            max_drawdown_cols = ['成立以来_最大回撤', '今年以来_最大回撤', '近1月_最大回撤', 
+                                '近3月_最大回撤', '近6月_最大回撤', '近1年_最大回撤', 
+                                '近3年_最大回撤', '近5年_最大回撤']
+            
+            for col in max_drawdown_cols:
+                value = row[col] if pd.notna(row[col]) else '---'
+                # 为最大回撤数据添加颜色样式（回撤越小越好，所以负值显示为绿色）
+                value_class = ""
+                if value != '---':
+                    try:
+                        val = float(str(value).rstrip('%'))
+                        value_class = "negative" if val < 0 else "positive"
+                    except:
+                        pass
+                if value_class:
+                    html_content += f'<td class="{value_class}">{value}</td>'
+                else:
+                    html_content += f'<td>{value}</td>'
+            
+            html_content += '</tr>'
+        
+        html_content += """
+            </table>
         </body>
         </html>
         """
@@ -454,9 +570,13 @@ class FundEstimator:
             
             # 获取历史增长率数据
             fund_rank_df = self.get_fund_historical_growth_data()
+
+            # 获取基金最大回撤数据
+            fund_codes = fund_df['基金代码'].tolist()
+            fund_achievement_data = self.get_fund_achievement_data(fund_codes)
             
             # 更新基金数据
-            result_df = self.update_fund_data(fund_df, fund_estimation_df, fund_rank_df)
+            result_df = self.update_fund_data(fund_df, fund_estimation_df, fund_rank_df, fund_achievement_data)
             
             # 保存数据
             self.save_data(result_df)
