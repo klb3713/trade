@@ -15,6 +15,9 @@ from email.mime.multipart import MIMEMultipart
 from email.header import Header
 from dotenv import load_dotenv
 
+# 获取当前文件所在目录
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
 # 加载环境变量
 load_dotenv()  # 从 .env 文件加载环境变量
 
@@ -23,7 +26,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/Users/klb3713/work/trade/fund_eval/fund_estimator.log'),
+        logging.FileHandler(os.path.join(current_dir, 'fund_estimator.log')),
         logging.StreamHandler()
     ]
 )
@@ -584,24 +587,24 @@ class FundEstimator:
             # 发送邮件
             self.send_email(result_df)
             
-            logger.info("基金估算数据更新完成")
+            logger.info("基金指标数据更新完成")
             return True
         except Exception as e:
-            logger.error(f"基金估算数据更新失败: {e}")
+            logger.error(f"基金指标数据更新失败: {e}")
             return False
 
 def main():
     """主函数"""
-    fund_info_path = '/Users/klb3713/work/trade/fund_eval/fund_info.csv'
-    output_path = '/Users/klb3713/work/trade/fund_eval/fund_info_with_estimation.csv'
+    fund_info_path = os.path.join(current_dir, 'fund_info.csv')
+    output_path = os.path.join(current_dir, 'fund_info_with_indicator.csv')
     
     estimator = FundEstimator(fund_info_path, output_path)
     success = estimator.run()
     
     if success:
-        logger.info("基金估算数据更新成功")
+        logger.info("基金指标数据更新成功")
     else:
-        logger.error("基金估算数据更新失败")
+        logger.error("基金指标数据更新失败")
 
 if __name__ == "__main__":
     main()
