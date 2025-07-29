@@ -59,15 +59,24 @@ class FundEstimator:
             
     def get_fund_estimation_data(self):
         """获取基金净值估算数据"""
-        try:
-            logger.info("正在获取基金净值估算数据...")
-            fund_estimation_df = ak.fund_value_estimation_em(symbol="全部")
-            fund_estimation_df['基金代码'] = fund_estimation_df['基金代码'].astype(str)
-            logger.info(f"成功获取基金估算数据，共 {len(fund_estimation_df)} 条记录")
-            return fund_estimation_df
-        except Exception as e:
-            logger.error(f"获取基金估算数据失败: {e}")
-            raise
+        max_retries = 3
+        retry_interval = 5
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"正在获取基金净值估算数据... (尝试 {attempt + 1}/{max_retries})")
+                fund_estimation_df = ak.fund_value_estimation_em(symbol="全部")
+                fund_estimation_df['基金代码'] = fund_estimation_df['基金代码'].astype(str)
+                logger.info(f"成功获取基金估算数据，共 {len(fund_estimation_df)} 条记录")
+                return fund_estimation_df
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"获取基金估算数据失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                    logger.info(f"等待 {retry_interval} 秒后重试...")
+                    time.sleep(retry_interval)
+                else:
+                    logger.error(f"获取基金估算数据失败，已达到最大重试次数: {e}")
+                    raise
 
     def get_column_names(self, fund_estimation_df):
         """
