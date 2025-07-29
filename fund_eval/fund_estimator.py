@@ -176,15 +176,27 @@ class FundEstimator:
         Returns:
             str: 格式化的HTML邮件内容
         """
-        # 按赛道分组
-        grouped = result_df.groupby('赛道')
+        # 创建结果副本并处理估算增长率排序
+        result_df_sorted = result_df.copy()
+        
+        # 将估算增长率转换为数值用于排序
+        def extract_growth_rate(value):
+            if pd.isna(value) or value == '---':
+                return float('-inf')  # 将空值排在最后
+            try:
+                return float(str(value).rstrip('%'))
+            except:
+                return float('-inf')
+        
+        result_df_sorted['估算增长率数值'] = result_df_sorted['估算增长率'].apply(extract_growth_rate)
+        result_df_sorted = result_df_sorted.sort_values('估算增长率数值', ascending=False)
         
         html_content = f"""
         <html>
         <head>
             <style>
                 body {{ font-family: Arial, sans-serif; }}
-                h2 {{ color: #333; }}
+                h1 {{ color: #333; }}
                 table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
                 th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
                 th {{ background-color: #f2f2f2; }}
@@ -195,60 +207,55 @@ class FundEstimator:
         <body>
             <h1>基金净值估算数据更新报告</h1>
             <p>更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-        """
-        
-        for track, group in grouped:
-            html_content += f"<h2>{track}</h2>"
-            html_content += """
+            <h2>基金估算增长率排行</h2>
             <table>
                 <tr>
                     <th>基金代码</th>
                     <th>基金名称</th>
-                    <th>年初至今</th>
+                    <th>板块</th>
                     <th>估算值</th>
                     <th>估算增长率</th>
                     <th>公布单位净值</th>
                     <th>公布日增长率</th>
                 </tr>
-            """
+        """
+        
+        for _, row in result_df_sorted.iterrows():
+            # 处理增长率的显示颜色
+            est_growth = row['估算增长率'] if pd.notna(row['估算增长率']) else '---'
+            pub_growth = row['公布日增长率'] if pd.notna(row['公布日增长率']) else '---'
             
-            for _, row in group.iterrows():
-                # 处理增长率的显示颜色
-                est_growth = row['估算增长率'] if pd.notna(row['估算增长率']) else '---'
-                pub_growth = row['公布日增长率'] if pd.notna(row['公布日增长率']) else '---'
-                
-                est_growth_class = ""
-                pub_growth_class = ""
-                
-                if est_growth != '---':
-                    try:
-                        est_val = float(est_growth.rstrip('%'))
-                        est_growth_class = "positive" if est_val > 0 else "negative"
-                    except:
-                        pass
-                        
-                if pub_growth != '---':
-                    try:
-                        pub_val = float(pub_growth.rstrip('%'))
-                        pub_growth_class = "positive" if pub_val > 0 else "negative"
-                    except:
-                        pass
-                
-                html_content += f"""
+            est_growth_class = ""
+            pub_growth_class = ""
+            
+            if est_growth != '---':
+                try:
+                    est_val = float(est_growth.rstrip('%'))
+                    est_growth_class = "positive" if est_val > 0 else "negative"
+                except:
+                    pass
+                    
+            if pub_growth != '---':
+                try:
+                    pub_val = float(pub_growth.rstrip('%'))
+                    pub_growth_class = "positive" if pub_val > 0 else "negative"
+                except:
+                    pass
+            
+            html_content += f"""
                 <tr>
                     <td>{row['基金代码']}</td>
                     <td>{row['基金名称']}</td>
-                    <td>{row['年初至今']}</td>
+                    <td>{row['板块']}</td>
                     <td>{row['估算值'] if pd.notna(row['估算值']) else '---'}</td>
                     <td class="{est_growth_class}">{est_growth}</td>
                     <td>{row['公布单位净值'] if pd.notna(row['公布单位净值']) else '---'}</td>
                     <td class="{pub_growth_class}">{pub_growth}</td>
                 </tr>
-                """
-            
-            html_content += "</table>"
+            """
         
         html_content += """
+            </table>
         </body>
         </html>
         """
