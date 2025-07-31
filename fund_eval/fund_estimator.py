@@ -158,7 +158,7 @@ class FundEstimator:
         Returns:
             dict: 包含各列名的字典
         """
-        actual_columns = fund_estimation_df.columns.tolist() if fund_estimation_df else []
+        actual_columns = fund_estimation_df.columns.tolist() if fund_estimation_df is not None else []
         
         # 获取估算数据列名
         est_value_col = next((col for col in actual_columns if '估算数据-估算值' in col), None)
